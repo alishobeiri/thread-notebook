@@ -27,7 +27,7 @@ import type {
 	CompletionContext,
 	CompletionResult,
 } from "@codemirror/autocomplete";
-import type { Text } from "@codemirror/state";
+import type { EditorState, Text } from "@codemirror/state";
 import type { PluginValue, ViewUpdate } from "@codemirror/view";
 import { Transport } from "@open-rpc/client-js/build/transports/Transport";
 import { captureException } from "@sentry/nextjs";
@@ -312,7 +312,10 @@ export class LanguageServerClient {
 		const i = this.plugins.indexOf(plugin);
 		if (i === -1) return;
 		this.plugins.splice(i, 1);
-		if (this.autoClose) this.close();
+		// The client (and its WebSocket) is shared by every cell editor, so it
+		// must only close once the last one detaches — otherwise a single cell
+		// re-render would tear down LSP for the whole notebook.
+		if (this.autoClose && this.plugins.length === 0) this.close();
 	}
 
 	private request<K extends keyof LSPRequestMap>(
@@ -347,6 +350,31 @@ export class LanguageServerClient {
 	}
 }
 
+// Build the concatenated virtual document for a given "current" cell. That
+// cell's text is supplied live from its editor (so it is up to date even
+// mid-keystroke); every other code cell is read from the store. Returns the
+// full document text and the current cell's global start line.
+function buildVirtualDocument(
+	cellId: string,
+	liveText: string,
+): { text: string; offset: number } {
+	const cells = useNotebookStore.getState().cells;
+	const parts: string[] = [];
+	let line = 0;
+	let offset = 0;
+	for (const cell of cells) {
+		if (cell.cell_type !== "code") continue;
+		const isCurrent = cell.id === cellId;
+		const text = isCurrent
+			? liveText
+			: multilineStringToString(cell.source);
+		if (isCurrent) offset = line;
+		parts.push(text);
+		line += text.split("\n").length;
+	}
+	return { text: parts.join("\n"), offset };
+}
+
 class LanguageServerPlugin implements PluginValue {
 	public client: LanguageServerClient;
 	private languageId: string;
@@ -363,36 +391,17 @@ class LanguageServerPlugin implements PluginValue {
 		this.initialize();
 	}
 
-	// This editor's cell id, supplied per-editor via the documentUri facet
-	// (see InputArea). Used to locate this cell within the virtual document.
-	get cellId(): string {
-		return this.view.state.facet(documentUri);
-	}
-
-	// Build the concatenated virtual document. This cell's text comes from the
-	// live editor (current even mid-keystroke); other cells come from the
-	// store. Returns the full text and this cell's global start line.
-	private buildVirtualDocument(): { text: string; offset: number } {
-		const cells = useNotebookStore.getState().cells;
-		const myId = this.cellId;
-		const myText = this.view.state.doc.toString();
-		const parts: string[] = [];
-		let line = 0;
-		let offset = 0;
-		for (const cell of cells) {
-			if (cell.cell_type !== "code") continue;
-			const isMe = cell.id === myId;
-			const text = isMe ? myText : multilineStringToString(cell.source);
-			if (isMe) offset = line;
-			parts.push(text);
-			line += text.split("\n").length;
-		}
-		return { text: parts.join("\n"), offset };
-	}
-
-	// Sync the virtual document to the server; return this cell's line offset.
-	private sync(): number {
-		const { text, offset } = this.buildVirtualDocument();
+	// Sync the virtual document for a given editor state and return that cell's
+	// global line offset. Identity comes from the passed state (the documentUri
+	// facet) rather than this.view, because completion/hover are routed through
+	// a single module-level plugin instance — so the request must use whichever
+	// editor actually triggered it, not the most recently created one.
+	private syncForState(state: EditorState): number {
+		const cellId = state.facet(documentUri);
+		const { text, offset } = buildVirtualDocument(
+			cellId,
+			state.doc.toString(),
+		);
 		this.client.syncDocument(text, this.languageId);
 		return offset;
 	}
@@ -401,7 +410,7 @@ class LanguageServerPlugin implements PluginValue {
 		if (!docChanged) return;
 		if (this.changesTimeout) clearTimeout(this.changesTimeout);
 		this.changesTimeout = self.setTimeout(() => {
-			this.sync();
+			this.syncForState(this.view.state);
 		}, changesDelay);
 	}
 
@@ -413,7 +422,7 @@ class LanguageServerPlugin implements PluginValue {
 		if (this.client.initializePromise) {
 			await this.client.initializePromise;
 		}
-		this.sync();
+		this.syncForState(this.view.state);
 	}
 
 	async requestHoverTooltip(
@@ -422,7 +431,7 @@ class LanguageServerPlugin implements PluginValue {
 	): Promise<Tooltip | null> {
 		if (!this.client || !this.client.capabilities!.hoverProvider)
 			return null;
-		const offset = this.sync();
+		const offset = this.syncForState(view.state);
 
 		const result = await this.client.textDocumentHover({
 			textDocument: { uri: NOTEBOOK_DOC_URI },
@@ -474,7 +483,7 @@ class LanguageServerPlugin implements PluginValue {
 	): Promise<CompletionResult | null> {
 		if (!this.client || !this.client.capabilities!.completionProvider)
 			return null;
-		const offset = this.sync();
+		const offset = this.syncForState(context.state);
 
 		const result = await this.client.textDocumentCompletion({
 			textDocument: { uri: NOTEBOOK_DOC_URI },
@@ -570,7 +579,11 @@ class LanguageServerPlugin implements PluginValue {
 		// local coordinates.
 		if (params.uri !== NOTEBOOK_DOC_URI) return;
 
-		const offset = this.buildVirtualDocument().offset;
+		const cellId = this.view.state.facet(documentUri);
+		const offset = buildVirtualDocument(
+			cellId,
+			this.view.state.doc.toString(),
+		).offset;
 		const localLines = this.view.state.doc.lines;
 
 		const diagnostics = params.diagnostics
