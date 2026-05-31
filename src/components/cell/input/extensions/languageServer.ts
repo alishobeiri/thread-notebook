@@ -69,6 +69,7 @@ interface LSPRequestMap {
 		LSP.CompletionParams,
 		LSP.CompletionItem[] | LSP.CompletionList | null,
 	];
+	"completionItem/resolve": [LSP.CompletionItem, LSP.CompletionItem];
 }
 
 // Client to server
@@ -241,6 +242,11 @@ export class LanguageServerClient {
 								documentationFormat: ["plaintext", "markdown"],
 								deprecatedSupport: false,
 								preselectSupport: false,
+								// We pull detail/docs lazily via
+								// completionItem/resolve for the focused item.
+								resolveSupport: {
+									properties: ["documentation", "detail"],
+								},
 							},
 							contextSupport: false,
 						},
@@ -347,6 +353,10 @@ export class LanguageServerClient {
 
 	async textDocumentCompletion(params: LSP.CompletionParams) {
 		return await this.request("textDocument/completion", params, timeout);
+	}
+
+	async completionItemResolve(item: LSP.CompletionItem) {
+		return await this.request("completionItem/resolve", item, timeout);
 	}
 
 	attachPlugin(plugin: LanguageServerPlugin) {
@@ -543,38 +553,78 @@ class LanguageServerPlugin implements PluginValue {
 
 		const items = "items" in result ? result.items : result;
 
-		let options = items.map(
-			({
-				detail,
+		const allowHTMLContent = this.allowHTMLContent;
+		const client = this.client;
+
+		let options = items.map((item) => {
+			const { detail, label, kind, textEdit, sortText, filterText } =
+				item;
+			const completion: Completion & {
+				filterText: string;
+				sortText?: string;
+				apply: string;
+			} = {
 				label,
-				kind,
-				textEdit,
-				documentation,
-				sortText,
-				filterText,
-			}) => {
-				const completion: Completion & {
-					filterText: string;
-					sortText?: string;
-					apply: string;
-				} = {
-					label,
-					apply: textEdit?.newText ?? label,
-					type: kind && CompletionItemKindMap[kind].toLowerCase(),
-					sortText: sortText ?? label,
-					filterText: filterText ?? label,
-				};
-				if (documentation) {
-					completion.info = formatContents(documentation);
+				apply: textEdit?.newText ?? label,
+				type: kind && CompletionItemKindMap[kind].toLowerCase(),
+				sortText: sortText ?? label,
+				filterText: filterText ?? label,
+			};
+
+			if (detail && !isValidUUID(detail)) {
+				completion.detail = detail;
+			}
+
+			// Signature and docstring are usually omitted from the initial list
+			// and only available via completionItem/resolve, so fetch them
+			// lazily when the item is focused and render them in the info panel.
+			completion.info = async () => {
+				let resolved = item;
+				if (client.capabilities?.completionProvider?.resolveProvider) {
+					try {
+						resolved =
+							(await client.completionItemResolve(item)) ?? item;
+					} catch (e) {
+						resolved = item;
+					}
 				}
 
-				if (detail && !isValidUUID(detail)) {
-					completion.detail = detail;
+				const signature =
+					typeof resolved.detail === "string" &&
+					!isValidUUID(resolved.detail)
+						? resolved.detail
+						: "";
+				const docs = resolved.documentation
+					? formatContents(resolved.documentation)
+					: "";
+				if (!signature && !docs) {
+					return null;
 				}
 
-				return completion;
-			},
-		);
+				const dom = document.createElement("div");
+				dom.classList.add("documentation");
+				if (signature) {
+					const sig = document.createElement("div");
+					sig.classList.add("lsp-completion-signature");
+					sig.style.fontFamily = "monospace";
+					sig.style.whiteSpace = "pre-wrap";
+					sig.textContent = signature;
+					dom.appendChild(sig);
+				}
+				if (docs) {
+					const body = document.createElement("div");
+					if (allowHTMLContent) {
+						body.innerHTML = docs;
+					} else {
+						body.textContent = docs;
+					}
+					dom.appendChild(body);
+				}
+				return dom;
+			};
+
+			return completion;
+		});
 
 		const [span, match] = prefixMatch(options);
 		const token = context.matchBefore(match);
