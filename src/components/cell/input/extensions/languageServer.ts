@@ -851,9 +851,12 @@ function renderCompletionInfo(signature: string, docs: string): HTMLElement {
 		maxWidth: "460px",
 		maxHeight: "320px",
 		overflowY: "auto",
-		padding: "8px 10px",
+		padding: "10px 12px",
+		// Sans-serif so the docstring reads as prose, not code.
+		fontFamily:
+			'-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
 		fontSize: "12px",
-		lineHeight: "1.45",
+		lineHeight: "1.5",
 	});
 
 	const addCode = (text: string) => {
@@ -861,12 +864,15 @@ function renderCompletionInfo(signature: string, docs: string): HTMLElement {
 		if (!trimmed) return;
 		const pre = document.createElement("pre");
 		Object.assign(pre.style, {
-			margin: "0 0 6px",
-			padding: "6px 8px",
-			borderRadius: "4px",
-			background: "var(--jp-layout-color2, rgba(127,127,127,0.12))",
-			fontFamily: "monospace",
-			fontSize: "12px",
+			margin: "0 0 8px",
+			padding: "8px 10px",
+			borderRadius: "6px",
+			background: "rgba(127, 127, 127, 0.12)",
+			border: "1px solid rgba(127, 127, 127, 0.2)",
+			fontFamily:
+				'"SF Mono", "Menlo", "Consolas", monospace',
+			fontSize: "11.5px",
+			lineHeight: "1.4",
 			whiteSpace: "pre-wrap",
 			overflowX: "auto",
 		});
