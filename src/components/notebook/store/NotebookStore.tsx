@@ -125,6 +125,11 @@ export interface INotebookStore {
 	setActiveCellSource: (newSource: string) => void;
 	deleteCell: (cellId: string) => void;
 	deleteActiveCell: () => void;
+	// When a cell is removed, erase the names it defined from the kernel
+	// namespace (unless another remaining cell still defines them) so they
+	// don't linger as hidden state, drop it from the dependency graph, and mark
+	// any remaining cells that read those names stale.
+	eraseDeletedCellState: (cellId: string) => void;
 	setCellType: (cellId: string, newType: ICellTypes) => void;
 	setCellGroup: (id: string, group: string) => void;
 	setCellOutputs: (cellId: string, newOutputs: IOutput[]) => void;
@@ -653,6 +658,7 @@ export const useNotebookStore = create<INotebookStore>()(
 							cells: [newCell],
 							activeCellIndex: index,
 						}));
+						get().eraseDeletedCellState(cellId);
 						return;
 					} else {
 						cells.splice(index, 1);
@@ -664,11 +670,13 @@ export const useNotebookStore = create<INotebookStore>()(
 							activeCellIndex: index,
 						}));
 					}
+					get().eraseDeletedCellState(cellId);
 					get().handleSave();
 				},
 				deleteActiveCell: () => {
 					const activeCellIndex = get().activeCellIndex;
 					const cells = [...get().cells];
+					const deletedId = cells[activeCellIndex]?.id as string;
 					const clampedIndex = get().clampIndex(
 						activeCellIndex,
 						Math.max(0, cells.length - 2),
@@ -688,7 +696,84 @@ export const useNotebookStore = create<INotebookStore>()(
 							activeCellIndex: clampedIndex,
 						}));
 					}
+					if (deletedId) {
+						get().eraseDeletedCellState(deletedId);
+					}
 					get().handleSave();
+				},
+				eraseDeletedCellState: (cellId: string) => {
+					const {
+						cellDependencies,
+						cellRunOrder,
+						lastExecutedSource,
+						staleCells,
+						cells,
+					} = get();
+					const deletedDeps = cellDependencies[cellId];
+
+					// Drop the removed cell from every graph record.
+					const nextDeps = { ...cellDependencies };
+					delete nextDeps[cellId];
+					const nextOrder = { ...cellRunOrder };
+					delete nextOrder[cellId];
+					const nextLastSrc = { ...lastExecutedSource };
+					delete nextLastSrc[cellId];
+					const nextStale = new Set(staleCells);
+					nextStale.delete(cellId);
+
+					// A name is hidden state worth erasing only if the deleted
+					// cell defined it at its last run and no remaining cell
+					// still defines it.
+					if (deletedDeps && deletedDeps.defines.length > 0) {
+						const remainingDefines = new Set<string>();
+						for (const cell of cells) {
+							const deps = nextDeps[cell.id as string];
+							if (!deps) {
+								continue;
+							}
+							for (const name of deps.defines) {
+								remainingDefines.add(name);
+							}
+						}
+						const erasable = deletedDeps.defines.filter(
+							(name) => !remainingDefines.has(name),
+						);
+
+						if (erasable.length > 0) {
+							// Remove the names from the kernel namespace. pop()
+							// avoids errors for names that no longer exist; the
+							// loop variable is cleaned up afterwards so it does
+							// not itself become hidden state.
+							const code =
+								`for __tn_name in ${JSON.stringify(erasable)}:\n` +
+								`    globals().pop(__tn_name, None)\n` +
+								`globals().pop("__tn_name", None)`;
+							ConnectionManager.getInstance().kernel?.silentExecute(
+								code,
+								() => {},
+							);
+
+							// Remaining cells that read an erased name now hold
+							// orphaned values: mark them stale.
+							const erased = new Set(erasable);
+							for (const cell of cells) {
+								const deps = nextDeps[cell.id as string];
+								if (!deps) {
+									continue;
+								}
+								if (deps.reads.some((r) => erased.has(r))) {
+									nextStale.add(cell.id as string);
+								}
+							}
+						}
+					}
+
+					set({
+						cellDependencies: nextDeps,
+						cellRunOrder: nextOrder,
+						lastExecutedSource: nextLastSrc,
+						staleCells: nextStale,
+					});
 				},
 				setCellType: (cellId: string, newType: ICellTypes) => {
 					const index = get().getCellIndexById(cellId);
