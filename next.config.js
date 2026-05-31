@@ -1,7 +1,4 @@
 /** @type {import('next').NextConfig} */
-const path = require("path");
-const withTM = require("next-transpile-modules")(["@jupyter-widgets/base"]);
-
 const nextConfig = {
 	basePath: "/thread-notebook",
 	assetPrefix: process.env.NODE_ENV === "production" ? "/thread-notebook/" : "",
@@ -10,28 +7,10 @@ const nextConfig = {
 		unoptimized: true,
 	},
 	reactStrictMode: false,
-	webpack: (config, { isServer }) => {
-		if (!isServer) {
-			config.module.rules.push({
-				test: /\.test\.ts$/,
-				loader: "ignore-loader",
-			});
-			config.module.rules.push({
-				test: /__tests__/,
-				loader: "ignore-loader",
-			});
-			config.module.rules.push({
-				test: /demo_assets/,
-				loader: "ignore-loader",
-			});
-			config.module.rules.push({
-				test: /\.(js|jsx|ts|tsx)$/,
-				include: path.resolve(__dirname, "proxy"),
-				loader: "ignore-loader",
-			});
-		}
-		return config;
-	},
+	// @jupyter-widgets/base ships untranspiled ESM and must be compiled by Next.
+	// Turbopack (default in Next 16) handles this natively via transpilePackages,
+	// replacing the old next-transpile-modules + custom webpack config.
+	transpilePackages: ["@jupyter-widgets/base"],
 };
 
-module.exports = withTM(nextConfig);
+module.exports = nextConfig;

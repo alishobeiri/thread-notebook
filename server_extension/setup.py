@@ -22,6 +22,11 @@ setup(
     install_requires=[
         "jupyter-server>=2.0",
         "jupyter",
+        # Powers the /lsp/ws/pylsp WebSocket endpoint the front-end connects to
+        # for completions, hover, and diagnostics. Without jupyter-lsp the
+        # endpoint does not exist; python-lsp-server is the actual language server.
+        "jupyter-lsp>=2.0",
+        "python-lsp-server>=1.7",
     ],
     entry_points={
         "console_scripts": [

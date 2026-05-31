@@ -127,7 +127,7 @@ export class LanguageServerClient {
 			// https://github.com/FurqanSoftware/codemirror-languageserver/issues/9
 			webSocketTransport.connection.addEventListener(
 				"message",
-				(message: MessageEvent) => {
+				(message) => {
 					let dataString: string;
 
 					// Check the type of message.data and convert it to a string if necessary

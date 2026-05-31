@@ -9,7 +9,6 @@
 /coverage
 
 # next.js
-yarn.lock
 /.next/
 /out/
 
