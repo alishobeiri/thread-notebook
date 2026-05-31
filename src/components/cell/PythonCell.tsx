@@ -302,7 +302,7 @@ const CellExecutionContainer = ({
 			width={`${CELL_GUTTER_WIDTH}px`}
 			lineHeight="28.2px"
 			justifyContent={"flex-end"}
-			alignItems={"flex-start"}
+			alignItems={"center"}
 			gap={1}
 			onMouseEnter={() => setIsHovering(true)}
 			onMouseLeave={() => setIsHovering(false)}
@@ -317,7 +317,14 @@ const CellExecutionContainer = ({
 					{(executionTime / 1000).toFixed(1)}s
 				</Text>
 			)}
-			<Box height={"22px"}>{iconElement}</Box>
+			<Box
+				height={"22px"}
+				display="flex"
+				alignItems="center"
+				lineHeight="22px"
+			>
+				{iconElement}
+			</Box>
 		</HStack>
 	);
 };
