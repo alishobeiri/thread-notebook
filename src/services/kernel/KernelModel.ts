@@ -180,9 +180,10 @@ export class KernelModel {
 			console.error(error);
 		}
 
-		// Update the reactive dependency graph from what just ran. Fire and
-		// forget: it manages its own errors and must not block the run queue.
-		void useNotebookStore
+		// Update the reactive dependency graph from what just ran. Awaited so
+		// the graph reflects this cell's deps before executeCell computes the
+		// reactive cascade in its .then(); it manages its own errors.
+		await useNotebookStore
 			.getState()
 			.onCellExecuted(cell.id as string, code);
 

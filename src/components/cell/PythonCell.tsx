@@ -6,6 +6,7 @@ import {
 	Flex,
 	HStack,
 	Text,
+	Tooltip,
 	VStack,
 	useColorModeValue,
 } from "@chakra-ui/react";
@@ -23,7 +24,7 @@ import {
 	CELL_GUTTER_WIDTH,
 	CELL_MINIMUM_HEIGHT,
 } from "../../utils/constants/constants";
-import { isPlatformMac } from "../../utils/utils";
+import { isPlatformMac, multilineStringToString } from "../../utils/utils";
 import { useNotebookStore } from "../notebook/store/NotebookStore";
 import InputArea from "./input/InputArea";
 import OutputArea from "./output/OutputArea";
@@ -182,18 +183,61 @@ const PythonCell = ({
 	);
 };
 
+// Small gutter indicator: amber when the cell is stale (an upstream input
+// changed), blue when it was edited since it last ran. Nothing when in sync.
+const ReactiveStatusDot = ({
+	cellId,
+	source,
+}: {
+	cellId: string;
+	source: ICell["source"];
+}) => {
+	const isStale = useNotebookStore((state) => state.staleCells.has(cellId));
+	const lastSrc = useNotebookStore(
+		(state) => state.lastExecutedSource[cellId],
+	);
+	const staleColor = useColorModeValue("orange.500", "orange.300");
+	const dirtyColor = useColorModeValue("blue.400", "blue.300");
+
+	const isDirty =
+		lastSrc !== undefined && multilineStringToString(source) !== lastSrc;
+
+	if (!isStale && !isDirty) {
+		return null;
+	}
+
+	const label = isStale
+		? "Stale — an upstream cell changed"
+		: "Modified since last run";
+
+	return (
+		<Tooltip label={label} fontSize="xs" placement="left">
+			<Box
+				width="8px"
+				height="8px"
+				borderRadius="full"
+				backgroundColor={isStale ? staleColor : dirtyColor}
+			/>
+		</Tooltip>
+	);
+};
+
 const CellExecutionContainer = ({
 	index,
 	active,
 	isExecuting,
 	queuedForExecution,
 	executionCount,
+	cellId,
+	source,
 }: {
 	index: number;
 	active: boolean;
 	isExecuting: boolean;
 	queuedForExecution: boolean;
 	executionCount?: ExecutionCount;
+	cellId: string;
+	source: ICell["source"];
 }) => {
 	const [hasExecuted, setHasExecuted] = useState(false);
 	const [isHovering, setIsHovering] = useState(false);
@@ -310,6 +354,8 @@ const CellExecutionContainer = ({
 						{(executionTime / 1000).toFixed(1)}s
 					</Text>
 				)}
+
+				<ReactiveStatusDot cellId={cellId} source={source} />
 			</VStack>
 		</HStack>
 	);
@@ -357,6 +403,8 @@ const PythonCellContainer: React.FC<CellContainerProps> = ({
 					isExecuting={isExecuting}
 					queuedForExecution={queuedForExecution}
 					executionCount={execution_count as ExecutionCount}
+					cellId={cell.id as string}
+					source={cell.source}
 				/>
 				<PythonCell
 					index={index}

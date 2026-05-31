@@ -153,7 +153,9 @@ export interface INotebookStore {
 	setMarkdownCellRendered: (cellId: string, rendered: boolean) => void;
 	executeAllCells: () => void;
 	executeSelectedCells: () => void;
-	executeCell: (cellId: string) => void;
+	// `reactive` (default true) auto-runs downstream dependents after this cell
+	// finishes. Batch paths (run-all, the cascade itself) pass false.
+	executeCell: (cellId: string, options?: { reactive?: boolean }) => void;
 	executeSelectedCellsAndAdvance: () => void;
 
 	isLoadingNotebook: boolean;
@@ -198,6 +200,9 @@ export interface INotebookStore {
 	getCellDependencies: (cellId: string) => CellDependencies | undefined;
 	// Cells reading a name this cell defines/mutates (its direct dependents).
 	getDownstreamCells: (cellId: string) => string[];
+	// Transitive dependents of a cell, in dependency (topological) order, for
+	// reactive re-execution. Excludes the cell itself.
+	getReactiveExecutionOrder: (cellId: string) => string[];
 	// Owner cells defining a name this cell reads (most-recently-run wins).
 	getUpstreamCells: (cellId: string) => string[];
 	isCellStale: (cellId: string) => boolean;
@@ -834,12 +839,23 @@ export const useNotebookStore = create<INotebookStore>()(
 						fileContents: undefined,
 						metadata: {} as NotebookMetadata,
 						selectedNotebook: undefined,
+						// Drop the reactive graph from the previous notebook.
+						cellDependencies: {},
+						cellRunOrder: {},
+						lastExecutedSource: {},
+						runCounter: 0,
+						staleCells: new Set<string>(),
 					}));
 				},
 				clearNotebook: () => {
 					set(() => ({
 						cells: [createNewCell()],
 						activeCellIndex: 0,
+						cellDependencies: {},
+						cellRunOrder: {},
+						lastExecutedSource: {},
+						runCounter: 0,
+						staleCells: new Set<string>(),
 					}));
 					get().handleSave();
 				},
@@ -1020,7 +1036,9 @@ export const useNotebookStore = create<INotebookStore>()(
 						cellLength: get().cells.length,
 					});
 					get().cells.map((cell, _) => {
-						get().executeCell(cell.id as string);
+						// Run-all already executes every cell, so suppress the
+						// per-cell reactive cascade to avoid redundant re-runs.
+						get().executeCell(cell.id as string, { reactive: false });
 					});
 				},
 				executeSelectedCells: () => {
@@ -1028,7 +1046,11 @@ export const useNotebookStore = create<INotebookStore>()(
 					const cell = get().cells[activeCellIndex];
 					get().executeCell(cell.id as string);
 				},
-				executeCell: (cellId: string) => {
+				executeCell: (
+					cellId: string,
+					options?: { reactive?: boolean },
+				) => {
+					const reactive = options?.reactive ?? true;
 					const connectionManager = ConnectionManager.getInstance();
 					const {
 						getCellIndexById,
@@ -1070,6 +1092,24 @@ export const useNotebookStore = create<INotebookStore>()(
 							.then(() => {
 								// Refresh the files after each execution
 								refreshFiles(path, true);
+
+								// Reactive cascade: after this cell runs, re-run
+								// its transitive dependents in dependency order.
+								// Run as one batch (not via executeCell) so cells
+								// don't each kick off their own cascade.
+								if (!reactive) {
+									return;
+								}
+								const order =
+									get().getReactiveExecutionOrder(cellId);
+								if (order.length === 0) {
+									return;
+								}
+								connectionManager.kernel
+									?.execute(order)
+									.then(() => {
+										refreshFiles(path, true);
+									});
 							});
 					} else if (cell_type === "markdown") {
 						const { setMarkdownCellRendered } = get();
@@ -1190,6 +1230,86 @@ export const useNotebookStore = create<INotebookStore>()(
 							}
 							return otherDeps.reads.some((r) => produced.has(r));
 						});
+				},
+
+				getReactiveExecutionOrder: (cellId: string) => {
+					const { cells, getDownstreamCells } = get();
+
+					// 1. Transitive downstream closure of the changed cell.
+					const reachable = new Set<string>();
+					const stack = [...getDownstreamCells(cellId)];
+					while (stack.length > 0) {
+						const node = stack.pop() as string;
+						if (node === cellId || reachable.has(node)) {
+							continue;
+						}
+						reachable.add(node);
+						for (const next of getDownstreamCells(node)) {
+							if (!reachable.has(next)) {
+								stack.push(next);
+							}
+						}
+					}
+					if (reachable.size === 0) {
+						return [];
+					}
+
+					// 2. Topologically sort the closure so a cell runs only
+					// after the cells it depends on. In-edges are counted only
+					// within the closure (edges from the root cell are already
+					// satisfied — it just ran), so the root's direct dependents
+					// start at in-degree 0.
+					const reachableList = Array.from(reachable);
+					const indegree = new Map<string, number>();
+					for (const node of reachableList) {
+						indegree.set(node, 0);
+					}
+					for (const node of reachableList) {
+						for (const dep of getDownstreamCells(node)) {
+							if (reachable.has(dep)) {
+								indegree.set(dep, (indegree.get(dep) ?? 0) + 1);
+							}
+						}
+					}
+
+					// Deterministic tie-break: notebook order.
+					const cellIndex = new Map<string, number>();
+					cells.forEach((cell, i) => cellIndex.set(cell.id as string, i));
+					const byNotebookOrder = (a: string, b: string) =>
+						(cellIndex.get(a) ?? 0) - (cellIndex.get(b) ?? 0);
+
+					const ready = Array.from(reachable)
+						.filter((node) => (indegree.get(node) ?? 0) === 0)
+						.sort(byNotebookOrder);
+					const order: string[] = [];
+					while (ready.length > 0) {
+						const node = ready.shift() as string;
+						order.push(node);
+						const newlyReady: string[] = [];
+						for (const dep of getDownstreamCells(node)) {
+							if (!reachable.has(dep)) {
+								continue;
+							}
+							const remaining = (indegree.get(dep) ?? 0) - 1;
+							indegree.set(dep, remaining);
+							if (remaining === 0) {
+								newlyReady.push(dep);
+							}
+						}
+						ready.push(...newlyReady);
+						ready.sort(byNotebookOrder);
+					}
+
+					// Any nodes left (dependency cycle) are appended in notebook
+					// order so a cycle degrades to "run them all once".
+					if (order.length < reachable.size) {
+						const remaining = Array.from(reachable)
+							.filter((node) => !order.includes(node))
+							.sort(byNotebookOrder);
+						order.push(...remaining);
+					}
+
+					return order;
 				},
 
 				getUpstreamCells: (cellId: string) => {
