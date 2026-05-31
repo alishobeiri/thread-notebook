@@ -236,7 +236,7 @@ export class LanguageServerClient {
 				rootUri: this.rootUri,
 				workspaceFolders: this.workspaceFolders,
 			},
-			5,
+			timeout,
 		);
 
 		await this.request(
@@ -257,7 +257,7 @@ export class LanguageServerClient {
 					},
 				},
 			},
-			5,
+			timeout,
 		);
 		if (result) {
 			this.capabilities = result.capabilities;
@@ -429,7 +429,7 @@ class LanguageServerPlugin implements PluginValue {
 		view: EditorView,
 		{ line, character }: { line: number; character: number },
 	): Promise<Tooltip | null> {
-		if (!this.client || !this.client.capabilities!.hoverProvider)
+		if (!this.client || !this.client.capabilities?.hoverProvider)
 			return null;
 		const offset = this.syncForState(view.state);
 
@@ -481,7 +481,7 @@ class LanguageServerPlugin implements PluginValue {
 			triggerCharacter: string | undefined;
 		},
 	): Promise<CompletionResult | null> {
-		if (!this.client || !this.client.capabilities!.completionProvider)
+		if (!this.client || !this.client.capabilities?.completionProvider)
 			return null;
 		const offset = this.syncForState(context.state);
 
