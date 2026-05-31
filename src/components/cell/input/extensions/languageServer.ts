@@ -49,7 +49,13 @@ const useLast = (values: readonly any[]) => values.reduce((_, v) => v, "");
 const client = Facet.define<LanguageServerClient, LanguageServerClient>({
 	combine: useLast,
 });
-export const documentUri = Facet.define<string, string>({ combine: useLast });
+export const documentUri = Facet.define<string, string>({
+	// InputArea supplies each editor's cell id at highest precedence, while the
+	// shared language-server extension also contributes an empty default. With
+	// useLast the empty default would win and every cell would resolve to "".
+	// Pick the first non-empty value so each editor resolves to its own cell id.
+	combine: (values) => values.find((v) => v) ?? "",
+});
 const languageId = Facet.define<string, string>({ combine: useLast });
 
 // https://microsoft.github.io/language-server-protocol/specifications/specification-current/
