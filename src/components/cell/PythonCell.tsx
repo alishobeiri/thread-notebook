@@ -211,25 +211,31 @@ const CellExecutionContainer = ({
 		}
 	};
 
+	// The cell is "busy" from the moment it is queued until it finishes, so the
+	// timer starts ticking the instant the user hits run (covering queue time
+	// during a reactive cascade), not only once it becomes the active cell.
+	const isBusy = isExecuting || queuedForExecution;
+
 	useEffect(() => {
-		if (isExecuting) {
-			setHasExecuted(true);
-			setExecutionTime(0);
-
-			// Start the timer
-			const startTime = Date.now();
-			timerRef.current = window.setInterval(() => {
-				setExecutionTime(Date.now() - startTime);
-			}, 100); // Update every 100 milliseconds
-
-			// Cleanup the timer when the component unmounts or when isExecuting changes
-			return () => {
-				clearTimer();
-			};
-		} else {
+		if (!isBusy) {
 			clearTimer();
+			return;
 		}
-	}, [isExecuting]);
+
+		setHasExecuted(true);
+		setExecutionTime(0);
+
+		// Start the timer, updating every 100ms so it visibly counts up.
+		const startTime = Date.now();
+		timerRef.current = window.setInterval(() => {
+			setExecutionTime(Date.now() - startTime);
+		}, 100);
+
+		// Stop and freeze on the final value when the cell finishes.
+		return () => {
+			clearTimer();
+		};
+	}, [isBusy]);
 
 	useEffect(() => {
 		const checkIfHoveredOutside = (e: MouseEvent) => {
@@ -303,8 +309,10 @@ const CellExecutionContainer = ({
 		>
 			{/* Timer sits beside the run icon, not below it, so the gutter
 			    never grows taller than a one-line cell and pushes the output
-			    away. */}
-			{hasExecuted && (executionTime / 1000).toFixed(1) !== "0.0" && (
+			    away. While busy it counts up live (from 0.0s); afterwards it
+			    freezes on the final time, hidden only for instant cells. */}
+			{(isBusy ||
+				(hasExecuted && (executionTime / 1000).toFixed(1) !== "0.0")) && (
 				<Text fontSize="xs" lineHeight="22px">
 					{(executionTime / 1000).toFixed(1)}s
 				</Text>
