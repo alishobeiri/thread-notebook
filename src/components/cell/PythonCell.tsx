@@ -6,7 +6,6 @@ import {
 	Flex,
 	HStack,
 	Text,
-	Tooltip,
 	VStack,
 	useColorModeValue,
 } from "@chakra-ui/react";
@@ -210,15 +209,20 @@ const ReactiveStatusDot = ({
 		? "Stale — an upstream cell changed"
 		: "Modified since last run";
 
+	// Absolutely positioned overlay so it never affects the gutter's height
+	// (which would otherwise add empty space below the cell). Native `title`
+	// avoids pulling in a portal-based tooltip for a purely informational dot.
 	return (
-		<Tooltip label={label} fontSize="xs" placement="left">
-			<Box
-				width="8px"
-				height="8px"
-				borderRadius="full"
-				backgroundColor={isStale ? staleColor : dirtyColor}
-			/>
-		</Tooltip>
+		<Box
+			position="absolute"
+			bottom="4px"
+			right="4px"
+			width="8px"
+			height="8px"
+			borderRadius="full"
+			backgroundColor={isStale ? staleColor : dirtyColor}
+			title={label}
+		/>
 	);
 };
 
@@ -342,9 +346,11 @@ const CellExecutionContainer = ({
 			height="100%"
 			lineHeight="28.2px"
 			justifyContent={"space-between"}
+			position="relative"
 			onMouseEnter={() => setIsHovering(true)}
 			onMouseLeave={() => setIsHovering(false)}
 		>
+			<ReactiveStatusDot cellId={cellId} source={source} />
 			<Flex />
 			<VStack width="100%" height="100%" alignItems={"flex-end"} flex={1}>
 				<Box height={"22px"}>{iconElement}</Box>
@@ -354,8 +360,6 @@ const CellExecutionContainer = ({
 						{(executionTime / 1000).toFixed(1)}s
 					</Text>
 				)}
-
-				<ReactiveStatusDot cellId={cellId} source={source} />
 			</VStack>
 		</HStack>
 	);
