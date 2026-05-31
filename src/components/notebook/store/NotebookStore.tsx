@@ -10,7 +10,8 @@ import ConnectionManager, {
 	useConnectionManagerStore,
 } from "../../../services/connection/connectionManager";
 import { standaloneToast } from "../../../theme";
-import { ThreadNotebookCell } from "../../../types/code.types";
+import { extractDependencies } from "../../../services/dependency/dependencyService";
+import { CellDependencies, ThreadNotebookCell } from "../../../types/code.types";
 import {
 	NotebookFile,
 	NotebookMetadata,
@@ -19,7 +20,7 @@ import {
 import { magicQuery } from "../../../utils/magic/magicQuery";
 import { trackEventData } from "../../../utils/posthog";
 import { normalizeCell } from "../../../utils/conversions";
-import { newUuid } from "../../../utils/utils";
+import { multilineStringToString, newUuid } from "../../../utils/utils";
 import { enableCommandMode } from "../../cell/actions/actions";
 import { refresh } from "../../sidebar/filesystem/FileSystemToolbarUtils";
 import debounce from "lodash.debounce";
@@ -173,6 +174,35 @@ export interface INotebookStore {
 	removeExecutingCell: (cellId: string) => void;
 	setExecutingCells: (cellIds: string[]) => void;
 	setCurrentlyExecutingCell: (cellId: string | undefined) => void;
+
+	// --- Reactive dependency graph ---------------------------------------
+	// All of this is computed at *execution* time (the kernel namespace only
+	// reflects cells that have run). Editing a cell never re-extracts deps; it
+	// only makes the cell "dirty" (its source no longer matches its last run),
+	// which is derived on demand from lastExecutedSource.
+
+	// cellId -> dependencies recorded at that cell's most recent execution.
+	cellDependencies: Record<string, CellDependencies>;
+	// cellId -> monotonic order of its last execution (for owner resolution).
+	cellRunOrder: Record<string, number>;
+	// cellId -> source as of its last execution (for the dirty check).
+	lastExecutedSource: Record<string, string>;
+	// Monotonically increasing counter; each execution takes the next value.
+	runCounter: number;
+	// Cells whose inputs changed upstream since they last ran.
+	staleCells: Set<string>;
+
+	// Record an execution: extract deps, update the graph, propagate staleness
+	// to direct dependents. Called from the post-execution hook.
+	onCellExecuted: (cellId: string, source: string) => Promise<void>;
+	getCellDependencies: (cellId: string) => CellDependencies | undefined;
+	// Cells reading a name this cell defines/mutates (its direct dependents).
+	getDownstreamCells: (cellId: string) => string[];
+	// Owner cells defining a name this cell reads (most-recently-run wins).
+	getUpstreamCells: (cellId: string) => string[];
+	isCellStale: (cellId: string) => boolean;
+	isCellDirty: (cellId: string) => boolean;
+	clearCellStale: (cellId: string) => void;
 }
 
 export const useNotebookStore = create<INotebookStore>()(
@@ -280,6 +310,13 @@ export const useNotebookStore = create<INotebookStore>()(
 				executingCells: new Set(),
 				fileContents: undefined,
 				metadata: {},
+
+				// Reactive dependency graph (see interface for semantics).
+				cellDependencies: {},
+				cellRunOrder: {},
+				lastExecutedSource: {},
+				runCounter: 0,
+				staleCells: new Set<string>(),
 
 				setPath: (path: string) => set({ path: path }),
 				setFileContents: (fileContents?: NotebookFile) => {
@@ -1061,6 +1098,159 @@ export const useNotebookStore = create<INotebookStore>()(
 				setCurrentlyExecutingCell: (cellId: string | undefined) => {
 					set({
 						currentExecutingCell: cellId,
+					});
+				},
+
+				onCellExecuted: async (cellId: string, source: string) => {
+					const deps = await extractDependencies(source);
+					// On transport/parse failure, leave the existing record
+					// untouched rather than wiping the cell out of the graph.
+					if (!deps) {
+						return;
+					}
+
+					set((state) => {
+						const order = state.runCounter + 1;
+						const cellDependencies = {
+							...state.cellDependencies,
+							[cellId]: deps,
+						};
+						const cellRunOrder = {
+							...state.cellRunOrder,
+							[cellId]: order,
+						};
+						const lastExecutedSource = {
+							...state.lastExecutedSource,
+							[cellId]: source,
+						};
+
+						// Names this run (re)produced. A cell that read any of
+						// them in its own last run is now stale. We mark only
+						// DIRECT dependents: a cell further downstream becomes
+						// stale only once the cell it reads actually re-runs, at
+						// which point this same logic re-propagates.
+						const produced = new Set([
+							...deps.defines,
+							...deps.mutates,
+						]);
+						const staleCells = new Set(state.staleCells);
+						staleCells.delete(cellId);
+
+						for (const other of state.cells) {
+							const otherId = other.id as string;
+							if (otherId === cellId) {
+								continue;
+							}
+							const otherDeps = cellDependencies[otherId];
+							// Never-executed cells aren't in the live graph yet.
+							if (!otherDeps) {
+								continue;
+							}
+							const consumesProduced = otherDeps.reads.some((r) =>
+								produced.has(r),
+							);
+							if (consumesProduced) {
+								staleCells.add(otherId);
+							}
+						}
+
+						return {
+							cellDependencies,
+							cellRunOrder,
+							lastExecutedSource,
+							runCounter: order,
+							staleCells,
+						};
+					});
+				},
+
+				getCellDependencies: (cellId: string) => {
+					return get().cellDependencies[cellId];
+				},
+
+				getDownstreamCells: (cellId: string) => {
+					const { cellDependencies, cells } = get();
+					const deps = cellDependencies[cellId];
+					if (!deps) {
+						return [];
+					}
+					const produced = new Set([
+						...deps.defines,
+						...deps.mutates,
+					]);
+					return cells
+						.map((cell) => cell.id as string)
+						.filter((id) => {
+							if (id === cellId) {
+								return false;
+							}
+							const otherDeps = cellDependencies[id];
+							if (!otherDeps) {
+								return false;
+							}
+							return otherDeps.reads.some((r) => produced.has(r));
+						});
+				},
+
+				getUpstreamCells: (cellId: string) => {
+					const { cellDependencies, cellRunOrder } = get();
+					const deps = cellDependencies[cellId];
+					if (!deps) {
+						return [];
+					}
+					const owners = new Set<string>();
+					for (const name of deps.reads) {
+						let owner: string | undefined;
+						let bestOrder = -1;
+						for (const [id, otherDeps] of Object.entries(
+							cellDependencies,
+						)) {
+							if (id === cellId) {
+								continue;
+							}
+							if (!otherDeps.defines.includes(name)) {
+								continue;
+							}
+							const order = cellRunOrder[id] ?? -1;
+							if (order > bestOrder) {
+								bestOrder = order;
+								owner = id;
+							}
+						}
+						if (owner) {
+							owners.add(owner);
+						}
+					}
+					return Array.from(owners);
+				},
+
+				isCellStale: (cellId: string) => {
+					return get().staleCells.has(cellId);
+				},
+
+				isCellDirty: (cellId: string) => {
+					const { lastExecutedSource, cells, getCellIndexById } =
+						get();
+					const recorded = lastExecutedSource[cellId];
+					// A cell that has never run can't be "out of date".
+					if (recorded === undefined) {
+						return false;
+					}
+					const cell = cells[getCellIndexById(cellId)];
+					if (!cell) {
+						return false;
+					}
+					return multilineStringToString(cell.source) !== recorded;
+				},
+
+				clearCellStale: (cellId: string) => {
+					set((state) => {
+						if (!state.staleCells.has(cellId)) {
+							return {};
+						}
+						const staleCells = new Set(state.staleCells);
+						staleCells.delete(cellId);
+						return { staleCells };
 					});
 				},
 				setRouter: (router: NextRouter) => {
