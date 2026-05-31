@@ -553,7 +553,6 @@ class LanguageServerPlugin implements PluginValue {
 
 		const items = "items" in result ? result.items : result;
 
-		const allowHTMLContent = this.allowHTMLContent;
 		const client = this.client;
 
 		let options = items.map((item) => {
@@ -601,25 +600,7 @@ class LanguageServerPlugin implements PluginValue {
 					return null;
 				}
 
-				const dom = document.createElement("div");
-				dom.classList.add("documentation");
-				if (signature) {
-					const sig = document.createElement("div");
-					sig.classList.add("lsp-completion-signature");
-					sig.style.fontFamily = "monospace";
-					sig.style.whiteSpace = "pre-wrap";
-					sig.textContent = signature;
-					dom.appendChild(sig);
-				}
-				if (docs) {
-					const body = document.createElement("div");
-					if (allowHTMLContent) {
-						body.innerHTML = docs;
-					} else {
-						body.textContent = docs;
-					}
-					dom.appendChild(body);
-				}
+				const dom = renderCompletionInfo(signature, docs);
 				return dom;
 			};
 
@@ -857,6 +838,73 @@ function offsetToPos(doc: Text, offset: number) {
 		line: line.number - 1,
 		character: offset - line.from,
 	};
+}
+
+// Render a completion's signature + docstring into a compact, scrollable panel.
+// The docs come back as markdown (basedpyright wraps the signature in a
+// ```python fence followed by the docstring), so split out code fences into
+// styled blocks and render the rest as wrapped prose.
+function renderCompletionInfo(signature: string, docs: string): HTMLElement {
+	const container = document.createElement("div");
+	container.className = "lsp-completion-info";
+	Object.assign(container.style, {
+		maxWidth: "460px",
+		maxHeight: "320px",
+		overflowY: "auto",
+		padding: "8px 10px",
+		fontSize: "12px",
+		lineHeight: "1.45",
+	});
+
+	const addCode = (text: string) => {
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		const pre = document.createElement("pre");
+		Object.assign(pre.style, {
+			margin: "0 0 6px",
+			padding: "6px 8px",
+			borderRadius: "4px",
+			background: "var(--jp-layout-color2, rgba(127,127,127,0.12))",
+			fontFamily: "monospace",
+			fontSize: "12px",
+			whiteSpace: "pre-wrap",
+			overflowX: "auto",
+		});
+		pre.textContent = trimmed;
+		container.appendChild(pre);
+	};
+
+	const addProse = (text: string) => {
+		const clean = text.replace(/^\s*---\s*$/gm, "").trim();
+		if (!clean) return;
+		const block = document.createElement("div");
+		Object.assign(block.style, {
+			whiteSpace: "pre-wrap",
+			margin: "0 0 6px",
+		});
+		block.textContent = clean;
+		container.appendChild(block);
+	};
+
+	const hasFence = /```/.test(docs);
+	// Show the explicit signature only when the docs don't already carry one.
+	if (signature && !hasFence) {
+		addCode(signature);
+	}
+
+	if (docs) {
+		const fenceRe = /```[a-zA-Z]*\n?([\s\S]*?)```/g;
+		let lastIndex = 0;
+		let match: RegExpExecArray | null;
+		while ((match = fenceRe.exec(docs)) !== null) {
+			addProse(docs.slice(lastIndex, match.index));
+			addCode(match[1]);
+			lastIndex = fenceRe.lastIndex;
+		}
+		addProse(docs.slice(lastIndex));
+	}
+
+	return container;
 }
 
 function formatContents(
