@@ -68,9 +68,14 @@ interface LSPRequestMap {
 // Client to server
 interface LSPNotifyMap {
 	initialized: LSP.InitializedParams;
-	"notebookDocument/didChange": LSP.DidChangeNotebookDocumentParams;
-	"notebookDocument/didOpen": LSP.DidOpenNotebookDocumentParams;
+	"textDocument/didOpen": LSP.DidOpenTextDocumentParams;
+	"textDocument/didChange": LSP.DidChangeTextDocumentParams;
 }
+
+// All code cells are concatenated into one virtual Python document under this
+// URI, so the language server sees the whole notebook as a single module and
+// can resolve names/imports defined in earlier cells.
+const NOTEBOOK_DOC_URI = "file:///thread-notebook.py";
 
 // Server to client
 interface LSPEventMap {
@@ -238,18 +243,16 @@ export class LanguageServerClient {
 			"workspace/didChangeConfiguration",
 			{
 				settings: {
-					pylsp: {
-						plugins: {
-							pylint: {
-								enabled: false,
-							},
-							pycodestyle: {
-								enabled: false,
-							},
-							jedi_completion: {
-								eager: true,
-								include_params: false,
-							},
+					// basedpyright reads python.analysis.*; "basic" type
+					// checking surfaces undefined names and obvious errors
+					// without the strict-mode noise that untyped data code
+					// (pandas, numpy) would otherwise generate.
+					python: {
+						analysis: {
+							typeCheckingMode: "basic",
+							diagnosticMode: "openFilesOnly",
+							autoImportCompletions: true,
+							useLibraryCodeForTypes: true,
 						},
 					},
 				},
@@ -268,19 +271,36 @@ export class LanguageServerClient {
 		this.client.close();
 	}
 
-	notebookDocumentDidOpen(params: LSP.DidOpenNotebookDocumentParams) {
-		return this.notify("notebookDocument/didOpen", params);
+	private documentOpened = false;
+	private documentVersion = 0;
+
+	// Push the latest concatenated notebook text to the server. The first call
+	// opens the document; subsequent calls send full-text changes. Shared
+	// across every cell's plugin so the single virtual document stays in sync.
+	syncDocument(text: string, languageId: string) {
+		this.documentVersion += 1;
+		if (!this.documentOpened) {
+			this.documentOpened = true;
+			return this.notify("textDocument/didOpen", {
+				textDocument: {
+					uri: NOTEBOOK_DOC_URI,
+					languageId,
+					version: this.documentVersion,
+					text,
+				},
+			});
+		}
+		return this.notify("textDocument/didChange", {
+			textDocument: { uri: NOTEBOOK_DOC_URI, version: this.documentVersion },
+			contentChanges: [{ text }],
+		});
 	}
 
-	notebookDocumentDidChange(params: LSP.DidChangeNotebookDocumentParams) {
-		return this.notify("notebookDocument/didChange", params);
-	}
-
-	async notebookDocumentHover(params: LSP.HoverParams) {
+	async textDocumentHover(params: LSP.HoverParams) {
 		return await this.request("textDocument/hover", params, timeout);
 	}
 
-	async notebookDocumentCompletion(params: LSP.CompletionParams) {
+	async textDocumentCompletion(params: LSP.CompletionParams) {
 		return await this.request("textDocument/completion", params, timeout);
 	}
 
@@ -343,45 +363,45 @@ class LanguageServerPlugin implements PluginValue {
 		this.initialize();
 	}
 
-	get documentUri() {
-		return useNotebookStore.getState().getActiveCell().id as string;
+	// This editor's cell id, supplied per-editor via the documentUri facet
+	// (see InputArea). Used to locate this cell within the virtual document.
+	get cellId(): string {
+		return this.view.state.facet(documentUri);
 	}
 
-	getNotebookDocument(): LSP.NotebookDocument {
-		const cells: LSP.NotebookCell[] = useNotebookStore
-			.getState()
-			.cells.map((cell) => {
-				return {
-					kind: cell.cell_type == "code" ? 2 : 1,
-					document: cell.id as string,
-				};
-			});
-		return {
-			uri: "123",
-			notebookType: "python",
-			version: 7,
-			cells: cells,
-		};
+	// Build the concatenated virtual document. This cell's text comes from the
+	// live editor (current even mid-keystroke); other cells come from the
+	// store. Returns the full text and this cell's global start line.
+	private buildVirtualDocument(): { text: string; offset: number } {
+		const cells = useNotebookStore.getState().cells;
+		const myId = this.cellId;
+		const myText = this.view.state.doc.toString();
+		const parts: string[] = [];
+		let line = 0;
+		let offset = 0;
+		for (const cell of cells) {
+			if (cell.cell_type !== "code") continue;
+			const isMe = cell.id === myId;
+			const text = isMe ? myText : multilineStringToString(cell.source);
+			if (isMe) offset = line;
+			parts.push(text);
+			line += text.split("\n").length;
+		}
+		return { text: parts.join("\n"), offset };
 	}
 
-	getCellTextDocuments(): LSP.TextDocumentItem[] {
-		return useNotebookStore.getState().cells.map((cell) => {
-			return {
-				uri: cell.id as string,
-				languageId: this.languageId,
-				version: 0,
-				text: multilineStringToString(cell.source),
-			};
-		}) as LSP.TextDocumentItem[];
+	// Sync the virtual document to the server; return this cell's line offset.
+	private sync(): number {
+		const { text, offset } = this.buildVirtualDocument();
+		this.client.syncDocument(text, this.languageId);
+		return offset;
 	}
 
 	update({ docChanged }: ViewUpdate) {
 		if (!docChanged) return;
 		if (this.changesTimeout) clearTimeout(this.changesTimeout);
 		this.changesTimeout = self.setTimeout(() => {
-			this.sendChange({
-				documentText: this.view.state.doc.toString(),
-			});
+			this.sync();
 		}, changesDelay);
 	}
 
@@ -393,62 +413,22 @@ class LanguageServerPlugin implements PluginValue {
 		if (this.client.initializePromise) {
 			await this.client.initializePromise;
 		}
-
-		this.client.notebookDocumentDidOpen({
-			notebookDocument: this.getNotebookDocument(),
-			cellTextDocuments: this.getCellTextDocuments(),
-		});
-	}
-
-	async sendChange({ documentText }: { documentText: string }) {
-		if (!this.client) return;
-		try {
-			const result = await this.client.notebookDocumentDidChange({
-				notebookDocument: this.getNotebookDocument(),
-				change: {
-					cells: {
-						textContent: [
-							{
-								document: {
-									uri: this.documentUri,
-									version: 0,
-								},
-								changes: [
-									{
-										text: documentText,
-									},
-								],
-							},
-						],
-					},
-				},
-			});
-			console.log("sendChange result: ", result);
-		} catch (e) {
-			console.error(e);
-		}
-	}
-
-	requestDiagnostics(view: EditorView) {
-		this.sendChange({ documentText: view.state.doc.toString() });
+		this.sync();
 	}
 
 	async requestHoverTooltip(
 		view: EditorView,
 		{ line, character }: { line: number; character: number },
 	): Promise<Tooltip | null> {
-		console.log("requestHover: ");
 		if (!this.client || !this.client.capabilities!.hoverProvider)
 			return null;
-		console.log("requestHover - client is valid");
-		this.sendChange({ documentText: view.state.doc.toString() });
+		const offset = this.sync();
 
-		const result = await this.client.notebookDocumentHover({
-			textDocument: { uri: this.documentUri },
-			position: { line, character },
+		const result = await this.client.textDocumentHover({
+			textDocument: { uri: NOTEBOOK_DOC_URI },
+			position: { line: line + offset, character },
 		});
 
-		console.log("requestHover - result: ", result);
 		if (!result) return null;
 
 		const { contents, range } = result;
@@ -456,11 +436,18 @@ class LanguageServerPlugin implements PluginValue {
 		let end = pos; // Initialize end with the same position as pos
 
 		if (range) {
-			pos = posToOffset(view.state.doc, range.start)!;
-			end = posToOffset(view.state.doc, range.end)!;
+			// Translate the server's global range back into this cell.
+			pos = posToOffset(view.state.doc, {
+				line: range.start.line - offset,
+				character: range.start.character,
+			})!;
+			end = posToOffset(view.state.doc, {
+				line: range.end.line - offset,
+				character: range.end.character,
+			})!;
 		}
 
-		if (pos === null) return null;
+		if (pos === null || pos === undefined) return null;
 
 		const dom = document.createElement("div");
 		dom.classList.add("documentation");
@@ -485,24 +472,19 @@ class LanguageServerPlugin implements PluginValue {
 			triggerCharacter: string | undefined;
 		},
 	): Promise<CompletionResult | null> {
-		console.log("request completion");
 		if (!this.client || !this.client.capabilities!.completionProvider)
 			return null;
-		console.log("request completion - client is valid");
-		this.sendChange({
-			documentText: context.state.doc.toString(),
-		});
+		const offset = this.sync();
 
-		const result = await this.client.notebookDocumentCompletion({
-			textDocument: { uri: this.documentUri },
-			position: { line, character },
+		const result = await this.client.textDocumentCompletion({
+			textDocument: { uri: NOTEBOOK_DOC_URI },
+			position: { line: line + offset, character },
 			context: {
 				triggerKind,
 				triggerCharacter,
 			},
 		});
 
-		console.log("requestCompletion - result: ", result);
 		if (!result) return null;
 
 		const items = "items" in result ? result.items : result;
@@ -583,12 +565,29 @@ class LanguageServerPlugin implements PluginValue {
 	}
 
 	processDiagnostics(params: PublishDiagnosticsParams) {
-		if (params.uri !== this.documentUri) return;
+		// Diagnostics are published against the single virtual document; keep
+		// only those that fall within this cell's slice and map them back to
+		// local coordinates.
+		if (params.uri !== NOTEBOOK_DOC_URI) return;
+
+		const offset = this.buildVirtualDocument().offset;
+		const localLines = this.view.state.doc.lines;
 
 		const diagnostics = params.diagnostics
+			.filter(
+				({ range }) =>
+					range.start.line >= offset &&
+					range.start.line < offset + localLines,
+			)
 			.map(({ range, message, severity }) => ({
-				from: posToOffset(this.view.state.doc, range.start)!,
-				to: posToOffset(this.view.state.doc, range.end)!,
+				from: posToOffset(this.view.state.doc, {
+					line: range.start.line - offset,
+					character: range.start.character,
+				})!,
+				to: posToOffset(this.view.state.doc, {
+					line: range.end.line - offset,
+					character: range.end.character,
+				})!,
 				severity: (
 					{
 						[DiagnosticSeverity.Error]: "error",

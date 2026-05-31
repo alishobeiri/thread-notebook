@@ -22,10 +22,13 @@ setup(
     install_requires=[
         "jupyter-server>=2.0",
         "jupyter",
-        # Powers the /lsp/ws/pylsp WebSocket endpoint the front-end connects to
-        # for completions, hover, and diagnostics. Without jupyter-lsp the
-        # endpoint does not exist; python-lsp-server is the actual language server.
+        # Powers the /lsp/ws/<server> WebSocket endpoints the front-end connects
+        # to for completions, hover, and diagnostics. Without jupyter-lsp the
+        # endpoints do not exist. basedpyright is the primary language server
+        # (type inference + sharp completions); python-lsp-server is kept as a
+        # lightweight fallback.
         "jupyter-lsp>=2.0",
+        "basedpyright>=1.13",
         "python-lsp-server>=1.7",
     ],
     entry_points={

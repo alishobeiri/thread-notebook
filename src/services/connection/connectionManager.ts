@@ -274,7 +274,7 @@ class ConnectionManager {
 
 		const kernel = new Kernel(session);
 		const serverUri =
-			`${this.serviceManager?.serverSettings.wsUrl}/lsp/ws/pylsp?token=${this.serverSettings?.token}` as "wss://";
+			`${this.serviceManager?.serverSettings.wsUrl}/lsp/ws/basedpyright?token=${this.serverSettings?.token}` as "wss://";
 
 		kernel.ready.then(() => {
 			const languageServerExtension = languageServer({
