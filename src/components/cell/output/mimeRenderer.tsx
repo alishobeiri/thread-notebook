@@ -93,6 +93,7 @@ export const mimeRenderer = (
 				return (
 					<TextHtmlRenderer
 						key={outputIndex}
+						preserveWhitespace
 						htmlContent={escape(
 							multilineStringToString(data[TEXT_PLAIN] as string),
 						)}

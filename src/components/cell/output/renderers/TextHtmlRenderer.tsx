@@ -39,9 +39,14 @@ const ScriptExecutor = ({
 const TextHtmlRenderer = ({
 	htmlContent,
 	style,
+	preserveWhitespace = false,
 }: {
 	htmlContent: string;
 	style?: React.CSSProperties;
+	// Real HTML (plotly, tables, …) collapses whitespace normally; preserving
+	// it renders the source's indentation/newlines as visible blank space.
+	// Only escaped plain-text output should keep its whitespace.
+	preserveWhitespace?: boolean;
 }) => {
 	const textHtmlRef = useRef<HTMLDivElement>(null);
 	const [contentSections, setContentSections] = useState<React.ReactNode[]>(
@@ -195,7 +200,12 @@ const TextHtmlRenderer = ({
 			if (doc.documentElement) {
 				sections.push(
 					<div
-						style={{ whiteSpace: "pre-wrap", fontSize: "14px" }}
+						style={{
+							whiteSpace: preserveWhitespace
+								? "pre-wrap"
+								: "normal",
+							fontSize: "14px",
+						}}
 						dangerouslySetInnerHTML={{
 							__html: doc.documentElement.innerHTML,
 						}}
@@ -213,7 +223,7 @@ const TextHtmlRenderer = ({
 				element.innerHTML = "";
 			}
 		};
-	}, [htmlContent]);
+	}, [htmlContent, preserveWhitespace]);
 
 	return (
 		<div ref={textHtmlRef} style={{ width: "100%", ...style }}>
