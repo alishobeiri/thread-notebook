@@ -101,6 +101,9 @@ export class LanguageServerClient {
 	private rootUri: string | null;
 	private workspaceFolders: LSP.WorkspaceFolder[] | null;
 	private autoClose?: boolean;
+	// Interpreter the analysis should resolve imports against — the running
+	// kernel's own python, so completions match what the notebook can import.
+	private pythonPath?: string;
 
 	private transport: Transport;
 	private requestManager: RequestManager;
@@ -117,6 +120,7 @@ export class LanguageServerClient {
 		this.rootUri = options.rootUri;
 		this.workspaceFolders = options.workspaceFolders;
 		this.autoClose = options.autoClose;
+		this.pythonPath = options.pythonPath;
 		this.plugins = [];
 		this.transport = options.transport;
 
@@ -134,6 +138,7 @@ export class LanguageServerClient {
 
 		const webSocketTransport = <WebSocketTransport>this.transport;
 		if (webSocketTransport && webSocketTransport.connection) {
+			const pythonPath = this.pythonPath;
 			// XXX(hjr265): Need a better way to do this. Relevant issue:
 			// https://github.com/FurqanSoftware/codemirror-languageserver/issues/9
 			webSocketTransport.connection.addEventListener(
@@ -163,15 +168,46 @@ export class LanguageServerClient {
 
 					function processMessage(dataString: string) {
 						const data = JSON.parse(dataString);
-						if (data.method && data.id) {
-							webSocketTransport.connection.send(
-								JSON.stringify({
-									jsonrpc: "2.0",
-									id: data.id,
-									result: null,
-								}),
-							);
+						// Only server -> client requests (have both method and
+						// id) need a reply.
+						if (!data.method || data.id === undefined || data.id === null) {
+							return;
 						}
+
+						let result: unknown = null;
+						// Answer the server's configuration pull with the kernel
+						// interpreter so it resolves third-party imports; replying
+						// null (the default) leaves it on its bundled python.
+						if (data.method === "workspace/configuration") {
+							const items = data.params?.items ?? [];
+							const analysis = {
+								typeCheckingMode: "basic",
+								autoImportCompletions: true,
+								useLibraryCodeForTypes: true,
+								diagnosticMode: "openFilesOnly",
+							};
+							result = items.map((item: { section?: string }) => {
+								const section = item?.section ?? "";
+								if (
+									section === "python" ||
+									section === "basedpyright"
+								) {
+									return { pythonPath, analysis };
+								}
+								if (section === "python.analysis") {
+									return analysis;
+								}
+								return {};
+							});
+						}
+
+						webSocketTransport.connection.send(
+							JSON.stringify({
+								jsonrpc: "2.0",
+								id: data.id,
+								result,
+							}),
+						);
 					}
 				},
 			);
@@ -235,6 +271,9 @@ export class LanguageServerClient {
 						didChangeConfiguration: {
 							dynamicRegistration: true,
 						},
+						// Lets the server pull settings (incl. the interpreter
+						// path) from us via workspace/configuration.
+						configuration: true,
 					},
 				},
 				initializationOptions: null,
@@ -643,6 +682,9 @@ interface LanguageServerBaseOptions {
 	workspaceFolders: LSP.WorkspaceFolder[] | null;
 	documentUri: string;
 	languageId: string;
+	// Path to the kernel's python interpreter, fed to the server so it resolves
+	// imports against the same environment the notebook runs in.
+	pythonPath?: string;
 }
 
 interface LanguageServerClientOptions extends LanguageServerBaseOptions {

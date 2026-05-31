@@ -276,18 +276,59 @@ class ConnectionManager {
 		const serverUri =
 			`${this.serviceManager?.serverSettings.wsUrl}/lsp/ws/basedpyright?token=${this.serverSettings?.token}` as "wss://";
 
-		kernel.ready.then(() => {
+		kernel.ready.then(async () => {
+			// Resolve imports against the kernel's own interpreter so
+			// completions match what this notebook can actually import.
+			const pythonPath = await this.getKernelPythonPath(kernel);
 			const languageServerExtension = languageServer({
 				serverUri: serverUri,
 				rootUri: `file://`,
 				languageId: "python",
 				workspaceFolders: [],
 				documentUri: "",
+				pythonPath,
 			});
 			this.setLanguageServerExtension(languageServerExtension);
 		});
 
 		this.setKernel(kernel);
+	}
+
+	// Ask the running kernel for its interpreter path (sys.executable) via a
+	// silent execution. Resolves to undefined if it can't be determined.
+	private getKernelPythonPath(kernel: Kernel): Promise<string | undefined> {
+		return new Promise((resolve) => {
+			let output = "";
+			let settled = false;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				resolve(output.trim() || undefined);
+			};
+			try {
+				kernel.silentExecute(
+					"import sys as _sys; print(_sys.executable)",
+					(msg: any) => {
+						const type = msg?.header?.msg_type;
+						if (type === "stream" && msg.content?.text) {
+							output += msg.content.text;
+						} else if (
+							type === "error" ||
+							(type === "status" &&
+								msg.content?.execution_state === "idle")
+						) {
+							finish();
+						}
+					},
+				);
+			} catch (error) {
+				captureException(error);
+				resolve(undefined);
+				return;
+			}
+			// Fallback in case the idle status message is missed.
+			setTimeout(finish, 4000);
+		});
 	}
 
 	async clearKernel() {
