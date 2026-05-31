@@ -3,7 +3,6 @@ import {
 	Button,
 	CircularProgress,
 	CircularProgressLabel,
-	Flex,
 	HStack,
 	Text,
 	VStack,
@@ -182,66 +181,18 @@ const PythonCell = ({
 	);
 };
 
-// Small gutter indicator: amber when the cell is stale (an upstream input
-// changed), blue when it was edited since it last ran. Nothing when in sync.
-const ReactiveStatusDot = ({
-	cellId,
-	source,
-}: {
-	cellId: string;
-	source: ICell["source"];
-}) => {
-	const isStale = useNotebookStore((state) => state.staleCells.has(cellId));
-	const lastSrc = useNotebookStore(
-		(state) => state.lastExecutedSource[cellId],
-	);
-	const staleColor = useColorModeValue("orange.500", "orange.300");
-	const dirtyColor = useColorModeValue("blue.400", "blue.300");
-
-	const isDirty =
-		lastSrc !== undefined && multilineStringToString(source) !== lastSrc;
-
-	if (!isStale && !isDirty) {
-		return null;
-	}
-
-	const label = isStale
-		? "Stale — an upstream cell changed"
-		: "Modified since last run";
-
-	// Absolutely positioned overlay so it never affects the gutter's height
-	// (which would otherwise add empty space below the cell). Native `title`
-	// avoids pulling in a portal-based tooltip for a purely informational dot.
-	return (
-		<Box
-			position="absolute"
-			bottom="4px"
-			right="4px"
-			width="8px"
-			height="8px"
-			borderRadius="full"
-			backgroundColor={isStale ? staleColor : dirtyColor}
-			title={label}
-		/>
-	);
-};
-
 const CellExecutionContainer = ({
 	index,
 	active,
 	isExecuting,
 	queuedForExecution,
 	executionCount,
-	cellId,
-	source,
 }: {
 	index: number;
 	active: boolean;
 	isExecuting: boolean;
 	queuedForExecution: boolean;
 	executionCount?: ExecutionCount;
-	cellId: string;
-	source: ICell["source"];
 }) => {
 	const [hasExecuted, setHasExecuted] = useState(false);
 	const [isHovering, setIsHovering] = useState(false);
@@ -343,24 +294,22 @@ const CellExecutionContainer = ({
 			ref={hoverRef}
 			fontFamily="monospace"
 			width={`${CELL_GUTTER_WIDTH}px`}
-			height="100%"
 			lineHeight="28.2px"
-			justifyContent={"space-between"}
-			position="relative"
+			justifyContent={"flex-end"}
+			alignItems={"flex-start"}
+			gap={1}
 			onMouseEnter={() => setIsHovering(true)}
 			onMouseLeave={() => setIsHovering(false)}
 		>
-			<ReactiveStatusDot cellId={cellId} source={source} />
-			<Flex />
-			<VStack width="100%" height="100%" alignItems={"flex-end"} flex={1}>
-				<Box height={"22px"}>{iconElement}</Box>
-
-				{hasExecuted && (executionTime / 1000).toFixed(1) !== "0.0" && (
-					<Text fontSize="xs">
-						{(executionTime / 1000).toFixed(1)}s
-					</Text>
-				)}
-			</VStack>
+			{/* Timer sits beside the run icon, not below it, so the gutter
+			    never grows taller than a one-line cell and pushes the output
+			    away. */}
+			{hasExecuted && (executionTime / 1000).toFixed(1) !== "0.0" && (
+				<Text fontSize="xs" lineHeight="22px">
+					{(executionTime / 1000).toFixed(1)}s
+				</Text>
+			)}
+			<Box height={"22px"}>{iconElement}</Box>
 		</HStack>
 	);
 };
@@ -376,6 +325,33 @@ const PythonCellContainer: React.FC<CellContainerProps> = ({
 	const topOfCellRef = useRef<HTMLDivElement>(null);
 	const { id, outputs, execution_count } = cell;
 
+	// Reactive status, shown as a colored strip on the cell's left edge:
+	// amber when stale (an upstream input changed), blue when modified since
+	// its last run. The active-cell color always takes precedence.
+	const isStale = useNotebookStore((state) =>
+		state.staleCells.has(id as string),
+	);
+	const lastSrc = useNotebookStore(
+		(state) => state.lastExecutedSource[id as string],
+	);
+	const staleColor = useColorModeValue("orange.500", "orange.300");
+	const dirtyColor = useColorModeValue("blue.400", "blue.300");
+
+	const isDirty =
+		lastSrc !== undefined && multilineStringToString(cell.source) !== lastSrc;
+
+	let edgeColor = "transparent";
+	let edgeLabel: string | undefined;
+	if (active) {
+		edgeColor = CELL_ACTIVE_COLOR;
+	} else if (isStale) {
+		edgeColor = staleColor;
+		edgeLabel = "Stale — an upstream cell changed";
+	} else if (isDirty) {
+		edgeColor = dirtyColor;
+		edgeLabel = "Modified since last run";
+	}
+
 	return (
 		<VStack
 			width="100%"
@@ -389,11 +365,8 @@ const PythonCellContainer: React.FC<CellContainerProps> = ({
 				height="100%"
 				gap={2}
 				overflow="auto"
-				borderLeft={
-					active
-						? `3px solid ${CELL_ACTIVE_COLOR}`
-						: "3px solid transparent"
-				}
+				borderLeft={`3px solid ${edgeColor}`}
+				title={edgeLabel}
 				alignItems="flex-start"
 				position="relative"
 				onClick={() => {
@@ -407,8 +380,6 @@ const PythonCellContainer: React.FC<CellContainerProps> = ({
 					isExecuting={isExecuting}
 					queuedForExecution={queuedForExecution}
 					executionCount={execution_count as ExecutionCount}
-					cellId={cell.id as string}
-					source={cell.source}
 				/>
 				<PythonCell
 					index={index}
