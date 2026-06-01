@@ -1,6 +1,4 @@
 import { create } from "zustand";
-import { useQueryLimitModalStore } from "../components/modals/query-limit/QueryLimitModalStore";
-import { useSettingsStore } from "../components/settings/SettingsStore";
 
 interface ApiCallState {
 	apiCallCount: number;
@@ -34,21 +32,12 @@ const useApiCallStore = create<ApiCallState>((set) => ({
 			return { apiCallCount: 0 };
 		}),
 	checkAndIncrementApiCallCount: () => {
-		const { apiCallCount, incrementApiCallCount } =
-			useApiCallStore.getState();
-		const isLocal = useSettingsStore.getState().isLocal;
-		const openaiApiKey = useSettingsStore.getState().openAIKey;
-		const serverProxyUrl = useSettingsStore.getState().serverProxyUrl;
+		const { incrementApiCallCount } = useApiCallStore.getState();
 
-		if (isLocal || openaiApiKey || serverProxyUrl != "") {
-			return true;
-		}
-
-		if (apiCallCount >= MAX_AI_API_CALLS) {
-			useQueryLimitModalStore.getState().setShowQueryLimitModal(true);
-			return false;
-		}
-
+		// AI query limit disabled for now: always allow the call through
+		// instead of capping at MAX_AI_API_CALLS and showing the limit modal.
+		// (Re-enable by restoring the isLocal/openAIKey/serverProxyUrl checks
+		// and the apiCallCount >= MAX_AI_API_CALLS gate.)
 		incrementApiCallCount();
 		return true;
 	},
