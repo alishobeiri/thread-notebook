@@ -1,19 +1,12 @@
 import {
 	ArrowDownIcon,
 	ArrowUpIcon,
-	ChevronUpIcon,
 	CloseIcon,
 } from "@chakra-ui/icons";
 import {
 	Box,
-	Button,
 	HStack,
 	IconButton,
-	Menu,
-	MenuButton,
-	MenuItem,
-	MenuList,
-	Switch,
 	Text,
 	Textarea,
 	Tooltip,
@@ -21,20 +14,44 @@ import {
 } from "@chakra-ui/react";
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import ResizeTextarea from "react-textarea-autosize";
-import { ChatSubmitIcon, CodeIcon, QuestionMarkIcon } from "../../assets/icons";
+import { ChatSubmitIcon, CodeIcon } from "../../assets/icons";
 import {
 	CELL_GUTTER_WIDTH,
 	CELL_MINIMUM_HEIGHT,
 } from "../../utils/constants/constants";
 import { trackClickEvent, trackEventData } from "../../utils/posthog";
-import { isInViewport, isPlatformMac } from "../../utils/utils";
+import {
+	isInViewport,
+	isPlatformMac,
+	multilineStringToString,
+} from "../../utils/utils";
 import { enableCommandMode } from "../cell/actions/actions";
 import useCellStore, { CellStatus } from "../cell/store/CellStore";
 import SpinnerWithStopButton from "../misc/SpinnerWithStopButton";
-import { useSettingsStore } from "../settings/SettingsStore";
 import { useNotebookStore } from "../notebook/store/NotebookStore";
-import { useChatStore } from "../sidebar/chat/store/ChatStore";
-import { MagicInputSelections, useMagicInputStore } from "./MagicInputStore";
+import { AgentTrace } from "./AgentTrace";
+import { useMagicInputStore } from "./MagicInputStore";
+
+// Detects an in-progress "@mention" at the caret: an "@" at the start or after
+// whitespace, followed by non-whitespace up to the caret. Returns the query
+// text and the "@" position, or null if the caret isn't in a mention.
+const getMentionToken = (
+	value: string,
+	caret: number,
+): { query: string; start: number } | null => {
+	const before = value.slice(0, caret);
+	const at = before.lastIndexOf("@");
+	if (at === -1) return null;
+	if (at > 0 && !/\s/.test(value[at - 1])) return null;
+	const query = before.slice(at + 1);
+	if (/\s/.test(query)) return null;
+	return { query, start: at };
+};
+
+const cellFirstLine = (cell: { source: any }): string =>
+	multilineStringToString(cell.source)
+		.split("\n")
+		.find((l) => l.trim()) ?? "";
 
 const goToActiveCell = (mainPanelRef: React.RefObject<HTMLDivElement>) => {
 	const activeCell = document.querySelector(".active-cell");
@@ -141,6 +158,7 @@ const RightIcon = ({
 		<SpinnerWithStopButton isSpinning={true} onClick={onStopClick} />
 	) : (
 		<IconButton
+			size="sm"
 			p={1}
 			borderRadius="md"
 			colorScheme="orange"
@@ -159,28 +177,15 @@ export const MagicInput = ({
 }) => {
 	const textareaBackgroundColor = "var(--jp-layout-color1)";
 	const textareaBorderColor = "var(--jp-border-color2)";
-	const notebookMode = useNotebookStore((state) => state.notebookMode);
 	const isGeneratingCells = useNotebookStore(
 		(state) => state.isGeneratingCells,
 	);
-	const activeCellIndex = useNotebookStore((state) => state.activeCellIndex);
 	const activeCell = useNotebookStore.getState().getActiveCell();
 	const cellState =
 		useCellStore((state) => state.cellStates)[activeCell.id as string] ??
 		{};
-	const previousQuery = cellState.previousQuery;
 	const selectedCode = useMagicInputStore((state) => state.selectedCode);
-	const selectedOption = useMagicInputStore((state) => state.selectedOption);
 	const setSelectedCode = useMagicInputStore.getState().setSelectedCode;
-	const setSelectedOption = useMagicInputStore.getState().setSelectedOption;
-	const availableSelections = useMagicInputStore(
-		(state) => state.availableSelections,
-	);
-	const autoExecuteGeneratedCode = useSettingsStore(
-		(state) => state.autoExecuteGeneratedCode,
-	);
-	const setAutoExecuteGeneratedCode =
-		useSettingsStore.getState().setAutoExecuteGeneratedCode;
 
 	const {
 		acceptAndRunProposedSource,
@@ -195,22 +200,11 @@ export const MagicInput = ({
 	};
 
 	const getCommandKey = () => {
-		let commandKey;
-
 		if (isGeneratingCells) {
-			commandKey = `${getCtrlKey()} + ⌫ to stop`;
-		} else {
-			const focusState = isFocused ? "switch modes" : "focus";
-			commandKey = `${getCtrlKey()} + K to ${focusState}`;
+			return `${getCtrlKey()} + ⌫ to stop`;
 		}
-
-		return commandKey;
+		return `${getCtrlKey()} + K to focus`;
 	};
-
-	useEffect(() => {
-		// Primary hook to keep updating the available actions
-		useMagicInputStore.getState().updateStore(notebookMode, cellState);
-	}, [notebookMode, activeCellIndex, cellState.status, selectedCode]);
 
 	const lines = selectedCode.split("\n").length;
 
@@ -221,15 +215,101 @@ export const MagicInput = ({
 
 	const [isFocused, setIsFocused] = useState(false);
 
+	// --- @-mention of cells -------------------------------------------------
+	const cells = useNotebookStore((state) => state.cells);
+	const mentions = useMagicInputStore((state) => state.mentions);
+	const { addMention, removeMention } = useMagicInputStore.getState();
+	const [mentionToken, setMentionToken] = useState<{
+		query: string;
+		start: number;
+	} | null>(null);
+	const [highlightedMention, setHighlightedMention] = useState(0);
+
+	const mentionCandidates = mentionToken
+		? cells
+				.map((cell, index) => ({ cell, index }))
+				.filter(({ cell, index }) => {
+					const q = mentionToken.query.toLowerCase();
+					if (!q) return true;
+					return `${index} ${cell.cell_type} ${cellFirstLine(cell)}`
+						.toLowerCase()
+						.includes(q);
+				})
+				.slice(0, 8)
+		: [];
+
+	const refreshMentionToken = () => {
+		const el = textareaRef.current;
+		if (!el) return;
+		setMentionToken(
+			getMentionToken(el.value, el.selectionStart ?? el.value.length),
+		);
+		setHighlightedMention(0);
+	};
+
+	const selectMention = (cell: any, index: number) => {
+		if (!mentionToken) return;
+		const newValue =
+			value.slice(0, mentionToken.start) +
+			value.slice(mentionToken.start + 1 + mentionToken.query.length);
+		setValue(newValue);
+		addMention({ id: cell.id as string, label: `Cell ${index}` });
+		const caret = mentionToken.start;
+		setMentionToken(null);
+		requestAnimationFrame(() => {
+			const el = textareaRef.current;
+			if (el) {
+				el.focus();
+				el.setSelectionRange(caret, caret);
+			}
+		});
+	};
+
 	const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
 		setValue(e.target.value);
+		setMentionToken(
+			getMentionToken(
+				e.target.value,
+				e.target.selectionStart ?? e.target.value.length,
+			),
+		);
+		setHighlightedMention(0);
 	};
 
 	const handleKeyPress = (
 		event: React.KeyboardEvent<HTMLTextAreaElement>,
 	) => {
-		const { selectedOption, availableSelections, setSelectedOption } =
-			useMagicInputStore.getState();
+		// @-mention menu navigation takes priority while it's open.
+		if (mentionToken && mentionCandidates.length > 0) {
+			if (event.key === "ArrowDown") {
+				setHighlightedMention(
+					(h) => (h + 1) % mentionCandidates.length,
+				);
+				event.preventDefault();
+				return;
+			}
+			if (event.key === "ArrowUp") {
+				setHighlightedMention(
+					(h) =>
+						(h - 1 + mentionCandidates.length) %
+						mentionCandidates.length,
+				);
+				event.preventDefault();
+				return;
+			}
+			if (event.key === "Enter" || event.key === "Tab") {
+				const choice = mentionCandidates[highlightedMention];
+				selectMention(choice.cell, choice.index);
+				event.preventDefault();
+				event.stopPropagation();
+				return;
+			}
+			if (event.key === "Escape") {
+				setMentionToken(null);
+				event.preventDefault();
+				return;
+			}
+		}
 
 		// Handle meta/ctrl + Enter
 		if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -246,10 +326,6 @@ export const MagicInput = ({
 			if (isGeneratingCells) {
 				useNotebookStore.getState().abortMagicQuery();
 				event.preventDefault();
-				if (useChatStore.getState().isResponding) {
-					useChatStore.getState().abortController.abort();
-					event.preventDefault();
-				}
 			} else if (cellState.status == CellStatus.FollowUp) {
 				rejectProposedSource(activeCell.id as string);
 				event.preventDefault();
@@ -270,39 +346,7 @@ export const MagicInput = ({
 			} else if (textareaRef.current) {
 				textareaRef.current.blur();
 			}
-		} else if ((event.metaKey || event.ctrlKey) && event.key === "k") {
-			// Handle meta/ctrl + k
-			const currentIndex = availableSelections.indexOf(
-				selectedOption as MagicInputSelections,
-			);
-			const nextIndex = (currentIndex + 1) % availableSelections.length;
-			trackEventData("Rotated magic input options");
-			setSelectedOption(availableSelections[nextIndex]);
-			event.preventDefault();
-		} else if ((event.metaKey || event.ctrlKey) && event.key === "j") {
-			// Handle meta/ctrl + j
-			setAutoExecuteGeneratedCode(!autoExecuteGeneratedCode);
-			event.preventDefault();
 		}
-	};
-
-	const handleOptionSelect = (option: MagicInputSelections) => {
-		setSelectedOption(option);
-		trackEventData("Option selected", { option });
-	};
-
-	const getPlaceholderText = () => {
-		if (selectedOption === MagicInputSelections.FollowUp) {
-			return `How would you like to follow up?`;
-		} else if (selectedOption === MagicInputSelections.Edit) {
-			if (selectedCode !== "") {
-				return `How would you like to edit this selection?`;
-			}
-			return `How would you like to edit this cell?`;
-		} else if (selectedOption === MagicInputSelections.Chat) {
-			return `What would you like to ask?`;
-		}
-		return `What would you like to generate?`;
 	};
 
 	return (
@@ -321,40 +365,26 @@ export const MagicInput = ({
 			<GoToActiveCell mainPanelRef={refToTrack} />
 			<VStack
 				position="relative"
-				minHeight={`${CELL_MINIMUM_HEIGHT}px`}
 				flex="1"
+				minW={0}
 				tabIndex={0}
 				borderWidth={"2px"}
 				backgroundColor={textareaBackgroundColor}
-				borderRadius="xl"
+				borderRadius="lg"
 				boxShadow={"md"}
 				alignItems="center"
-				pl={"0.5rem"}
-				pr={"0.5rem"}
+				pl={3}
+				pr={2}
+				py={0.5}
 				mr={"0.40rem"}
-				gap={0}
+				gap={0.5}
 				borderColor={
 					isFocused
 						? `${"var(--jp-brand-color1)"}`
 						: `${textareaBorderColor}`
 				}
 			>
-				<Box
-					position="absolute"
-					top="0rem"
-					left="50%"
-					transform="translateX(-50%)"
-				>
-					<Text
-						fontFamily="Space Grotesk"
-						fontSize="xs"
-						color="var(--chakra-colors-chakra-placeholder-color)"
-						m={0}
-						p={0}
-					>
-						{getCommandKey()}
-					</Text>
-				</Box>
+				<AgentTrace />
 				{selectedCode != "" && (
 					<HStack
 						alignSelf={"flex-start"}
@@ -394,100 +424,78 @@ export const MagicInput = ({
 						/>
 					</HStack>
 				)}
-				{previousQuery &&
-					selectedOption == MagicInputSelections.FollowUp && (
-						<HStack
-							alignSelf="stretch"
-							w="100%"
-							justifyContent="flex-start"
-							alignItems="center"
-							mt={2}
-							p={2}
-							py={0}
-							bg={"var(--jp-layout-color1)"}
-							borderRadius="md"
-							pl={4}
-						>
-							<QuestionMarkIcon boxSize={"0.7em"} />
-							<Tooltip label={previousQuery} hasArrow>
-								<Text
-									fontFamily={"Space Grotesk"}
-									fontSize={"sm"}
-									ml={2}
-									isTruncated
+
+				{mentions.length > 0 && (
+						<HStack alignSelf="flex-start" w="100%" flexWrap="wrap" gap={1} mt={1}>
+							{mentions.map((m) => (
+								<HStack
+									key={m.id}
+									bg={"var(--jp-layout-color2)"}
+									borderRadius="md"
+									px={2}
+									py={0.5}
+									gap={1}
 								>
-									{previousQuery}
-								</Text>
-							</Tooltip>
+									<Text fontSize="xs" fontWeight={600}>@{m.label}</Text>
+									<CloseIcon
+										boxSize="0.5em"
+										cursor="pointer"
+										onClick={() => removeMention(m.id)}
+									/>
+								</HStack>
+							))}
 						</HStack>
 					)}
-				{selectedOption === MagicInputSelections.Generate && (
-					<HStack
-						alignItems={"flex-start"}
-						mt={0}
-						px={2}
-						py={0}
-						pt={2}
-						w={"100%"}
-						gap={2}
-					>
-						<Tooltip
-							label={`Automatically execute generated code (${getCtrlKey()} + J)`}
-							fontSize={"small"}
-							placement="top"
-						>
-							<Switch
-								isChecked={autoExecuteGeneratedCode}
-								onChange={(e) => {
-									setAutoExecuteGeneratedCode(
-										e.target.checked,
-									);
-								}}
-								colorScheme="orange"
-								size={"sm"}
-							/>
-						</Tooltip>
-						<Text
-							fontFamily={"Space Grotesk"}
-							fontSize={"xs"}
-							color="gray.500"
-						>
-							{`Auto-execute code (${getCtrlKey()} + J)`}
-						</Text>
-					</HStack>
-				)}
 
-				<HStack width={"100%"}>
-					<Menu>
-						<MenuButton
-							flexShrink={0}
-							as={Button}
-							colorScheme="orange"
-							size="md"
-							variant="ghost"
-							fontFamily="Space Grotesk"
+					{mentionToken && mentionCandidates.length > 0 && (
+						<VStack
+							alignSelf="stretch"
+							w="100%"
+							maxH="180px"
+							overflowY="auto"
+							bg={"var(--jp-layout-color1)"}
+							borderWidth="1px"
+							borderColor="var(--jp-border-color2)"
+							borderRadius="md"
+							gap={0}
+							mb={1}
+							align="stretch"
 						>
-							<HStack width="100%">
-								<Text>{selectedOption}</Text>
-								<ChevronUpIcon />
-							</HStack>
-						</MenuButton>
-						<MenuList fontFamily="Space Grotesk">
-							{availableSelections.map((option) => (
-								<MenuItem
-									key={option}
-									onClick={() => handleOptionSelect(option)}
+							{mentionCandidates.map(({ cell, index }, i) => (
+								<HStack
+									key={cell.id as string}
+									px={2}
+									py={1}
+									gap={2}
+									cursor="pointer"
+									bg={
+										i === highlightedMention
+											? "var(--jp-layout-color2)"
+											: "transparent"
+									}
+									onMouseEnter={() => setHighlightedMention(i)}
+									onClick={() => selectMention(cell, index)}
 								>
-									<Text>{option}</Text>
-								</MenuItem>
+									<Text fontSize="xs" fontWeight={600} flexShrink={0}>
+										Cell {index}
+									</Text>
+									<Text fontSize="xs" color="gray.500" flexShrink={0}>
+										{cell.cell_type}
+									</Text>
+									<Text fontSize="xs" color="gray.500" isTruncated minW={0}>
+										{cellFirstLine(cell)}
+									</Text>
+								</HStack>
 							))}
-						</MenuList>
-					</Menu>
+						</VStack>
+					)}
 
+					<HStack width={"100%"} align="center" gap={2}>
 					<Textarea
 						ref={textareaRef}
 						id="generate-textarea"
 						onChange={handleChange}
+						onClick={refreshMentionToken}
 						value={value}
 						onKeyDown={handleKeyPress}
 						onFocus={() => {
@@ -502,23 +510,41 @@ export const MagicInput = ({
 						outline="none"
 						border="0px solid transparent"
 						as={ResizeTextarea}
-						py="1rem"
+						fontSize="sm"
+						lineHeight="1.4"
+						minH="unset"
+						py="0.15rem"
 						pl="0"
-						pr="1rem"
+						pr="0"
 						rows={1}
-						placeholder={getPlaceholderText()}
+						placeholder={"What would you like to do?"}
 						_placeholder={{
 							fontFamily: "Space Grotesk",
+							fontSize: "sm",
 						}}
 						flexGrow={1}
 						minRows={1}
-						maxRows={4}
 						width="100%"
 						resize="none"
+						overflow="hidden"
 						_focusVisible={{
 							outline: "none",
 						}}
 					/>
+					<Text
+						flexShrink={0}
+						whiteSpace="nowrap"
+						fontFamily="Space Grotesk"
+						fontSize="0.6rem"
+						lineHeight="1"
+						opacity={0.6}
+						color="var(--chakra-colors-chakra-placeholder-color)"
+						display={{ base: "none", md: "block" }}
+						m={0}
+						p={0}
+					>
+						{getCommandKey()}
+					</Text>
 					<RightIcon
 						isLoading={isGeneratingCells}
 						handleQuery={handleQuery}

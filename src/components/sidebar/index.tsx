@@ -14,7 +14,6 @@ import React, {
 } from "react";
 import { useRouter } from "next/router";
 import {
-	ChatIcon,
 	DiscordIcon,
 	FolderIcon,
 	GithubIcon,
@@ -24,12 +23,10 @@ import {
 import { useNotebookStore } from "../notebook/store/NotebookStore";
 import { useResizeWidth } from "../../hooks/useResizeWidth";
 import {
-	CHAT_PANEL_ID,
 	FILESYSTEM_PANEL_ID,
 	SETTINGS_PANEL_ID,
 	TERMINAL_PANEL_ID,
 } from "../../utils/constants/constants";
-import ChatContent from "./panels/ChatContent";
 import FileSystemContent from "./panels/FileSystemContent/FileSystemContent";
 import SettingsContent from "./panels/SettingsContent";
 import TerminalContent from "./panels/TerminalContent";
@@ -94,9 +91,7 @@ const SidebarPanel: React.FC<SidebarPanelProps> = ({
 	panelType,
 	handleCloseSidebar,
 }) => {
-	if (panelType === CHAT_PANEL_ID) {
-		return <ChatContent handleCloseSidebar={handleCloseSidebar} />;
-	} else if (panelType === FILESYSTEM_PANEL_ID) {
+	if (panelType === FILESYSTEM_PANEL_ID) {
 		return <FileSystemContent handleCloseSidebar={handleCloseSidebar} />;
 	} else if (panelType === SETTINGS_PANEL_ID) {
 		return <SettingsContent handleCloseSidebar={handleCloseSidebar} />;
@@ -113,7 +108,8 @@ export default function Sidebar() {
 		"var(--jp-layout-color2)",
 		"var(--jp-layout-color1)",
 	);
-	const panelType = useSidebarStore((state) => state.panelType) ?? "chat";
+	const panelType =
+		useSidebarStore((state) => state.panelType) ?? FILESYSTEM_PANEL_ID;
 	const isExpanded = useSidebarStore((state) => state.isExpanded);
 	const sidebarWidth = useSidebarStore((state) => state.sidebarWidth);
 	const setSidebarWidth = useSidebarStore((state) => state.setSidebarWidth);
@@ -189,16 +185,6 @@ export default function Sidebar() {
 								handleSidebarIconClick(FILESYSTEM_PANEL_ID)
 							}
 							label="Files"
-						/>
-						<SidebarIcon
-							icon={<ChatIcon />}
-							isSelected={
-								isExpanded && panelType === CHAT_PANEL_ID
-							}
-							onClick={() =>
-								handleSidebarIconClick(CHAT_PANEL_ID)
-							}
-							label="Chat"
 						/>
 					</VStack>
 					<VStack>

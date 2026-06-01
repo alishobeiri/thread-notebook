@@ -14,8 +14,6 @@ export const CELL_ACTIVE_COLOR = "var(--chakra-colors-orange-500)";
 export const SIDEPANEL_WIDTH = 350;
 export const SCROLL_TO_BOTTOM_THRESHOLD = 100;
 
-export const CHAT_PANEL_ID = "chat";
-
 export const FILESYSTEM_PANEL_ID = "filesystem";
 
 export const TERMINAL_PANEL_ID = "terminal";

@@ -1,10 +1,8 @@
 import { EditorState, StateField } from "@codemirror/state";
 import { EditorView, Tooltip, showTooltip } from "@codemirror/view";
 import { Extension, Line } from "@uiw/react-codemirror";
-import { CHAT_PANEL_ID } from "../../../../utils/constants/constants";
 import { isPlatformMac } from "../../../../utils/utils";
 import { useMagicInputStore } from "../../../input/MagicInputStore";
-import { useSidebarStore } from "../../../sidebar/store/SidebarStore";
 import { getSelectedCode } from "./shared";
 
 const cursorTooltipField = StateField.define<readonly Tooltip[]>({
@@ -53,10 +51,6 @@ function createActionButton(
 function getCursorTooltips(state: EditorState): readonly Tooltip[] {
 	// TODO: Could be reactive to user selection after highlighting text, but not needed now.
 	//  currently, will assess this only after user selection
-	const isChatOpen =
-		useSidebarStore.getState().isExpanded &&
-		useSidebarStore.getState().panelType === CHAT_PANEL_ID;
-
 	const nonEmptySelections = state.selection.ranges.filter(
 		(range) => !range.empty,
 	);
@@ -116,7 +110,7 @@ function getCursorTooltips(state: EditorState): readonly Tooltip[] {
 				dom.className = "cm-selection-actions";
 
 				let editButton = createActionButton(
-					"Edit",
+					"Add to prompt",
 					"cm-action-button cm-edit-btn",
 					() => {
 						dom.style.display = "none";
@@ -127,20 +121,6 @@ function getCursorTooltips(state: EditorState): readonly Tooltip[] {
 					},
 				);
 				dom.appendChild(editButton);
-
-				let chatButton = createActionButton(
-					(isChatOpen ? "Add to Chat" : "Chat") + " ",
-					"cm-action-button cm-chat-btn",
-					() => {
-						useSidebarStore
-							.getState()
-							.openChatAndSetSelection(selectionText);
-					},
-					{
-						keys: [isPlatformMac() ? "⌘" : "Ctrl", "B"],
-					},
-				);
-				dom.appendChild(chatButton);
 
 				return { dom };
 			},

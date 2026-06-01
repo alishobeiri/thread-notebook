@@ -1,9 +1,5 @@
 import { create } from "zustand";
-import {
-	CHAT_PANEL_ID,
-	FILESYSTEM_PANEL_ID,
-} from "../../../utils/constants/constants";
-import { useChatStore } from "../chat/store/ChatStore";
+import { FILESYSTEM_PANEL_ID } from "../../../utils/constants/constants";
 
 const SIDEBAR_WIDTH_KEY = "threadNotebookSidebarWidth";
 const SIDEBAR_EXPANDED_KEY = "threadNotebookSidebarExpanded";
@@ -22,10 +18,7 @@ interface SidebarState {
 	initializeSidebar: () => void;
 	setSidebarWidth: (width: number) => void;
 	toggleOpen: () => void;
-	openChat: () => void;
 	openFileSystem: () => void;
-	openChatAndSetSelection: (selection?: string) => void;
-	initializeChat: (selection: string) => void;
 }
 
 export const useSidebarStore = create<SidebarState>((set, get) => ({
@@ -87,15 +80,9 @@ export const useSidebarStore = create<SidebarState>((set, get) => ({
 	toggleOpen: () => {
 		set((state) => {
 			if (state.panelType === "" && state.isExpanded === false) {
-				return { panelType: CHAT_PANEL_ID, isExpanded: true };
+				return { panelType: FILESYSTEM_PANEL_ID, isExpanded: true };
 			}
 			return { isExpanded: !state.isExpanded };
-		});
-	},
-	openChat: () => {
-		set((state) => {
-			state.textInputRef?.focus();
-			return { isExpanded: true, panelType: CHAT_PANEL_ID };
 		});
 	},
 	openFileSystem: () => {
@@ -103,21 +90,5 @@ export const useSidebarStore = create<SidebarState>((set, get) => ({
 			isExpanded: true,
 			panelType: FILESYSTEM_PANEL_ID,
 		}));
-	},
-	openChatAndSetSelection: (selection?: string) => {
-		if (selection) {
-			useChatStore.getState().addChatContext(selection);
-		}
-		get().openChat();
-		get().textInputRef?.focus();
-	},
-	initializeChat: (selection: string = "") => {
-		const { askChatAssistant } = useChatStore.getState();
-		set(() => ({
-			isExpanded: true,
-			panelType: CHAT_PANEL_ID,
-		}));
-
-		askChatAssistant(`${selection}`);
 	},
 }));

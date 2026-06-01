@@ -1,54 +1,65 @@
+import { RefObject } from "react";
 import { create } from "zustand";
 import { useNotebookStore } from "../notebook/store/NotebookStore";
-import { RefObject } from "react";
-import { CellState, CellStatus } from "../cell/store/CellStore";
 
-export enum MagicInputSelections {
-	Generate = "Generate",
-	Edit = "Edit",
-	FollowUp = "Follow up",
-	Chat = "Chat",
+// A cell the user has @-mentioned to attach as explicit context for the next
+// request.
+export interface CellMention {
+	id: string;
+	label: string;
 }
 
 interface MagicInputStore {
 	value: string;
+	// Code the user has highlighted in a cell — folded into the agent's context
+	// as the focus of the request (shown as a chip above the input).
 	selectedCode: string;
+	// Cells explicitly attached via @-mention; included in the request context.
+	mentions: CellMention[];
 	textareaRef: RefObject<HTMLTextAreaElement> | null;
-	selectedOption: MagicInputSelections;
-	availableSelections: MagicInputSelections[];
 	setValue: (value: string) => void;
 	setSelectedCode: (code: string) => void;
+	addMention: (mention: CellMention) => void;
+	removeMention: (id: string) => void;
+	clearMentions: () => void;
 	handleQuery: (userQuery: string) => void;
 	setTextareaRef: (textareaRef: RefObject<HTMLTextAreaElement>) => void;
 	focusMagicInput: () => void;
-	setSelectedOption: (option: MagicInputSelections) => void;
-	setAvailableSelections: (options: MagicInputSelections[]) => void;
-	updateStore: (notebookMode: string, cellState: CellState) => string[];
 }
 
 export const useMagicInputStore = create<MagicInputStore>((set, get) => ({
 	value: "",
 	selectedCode: "",
+	mentions: [],
 	textareaRef: null,
-	selectedOption: MagicInputSelections.Edit,
-	availableSelections: [
-		MagicInputSelections.Generate,
-		MagicInputSelections.Edit,
-		MagicInputSelections.Chat,
-	],
 	setValue: (value: string) => {
 		set({ value });
 	},
 	setSelectedCode: (code: string) => {
 		set({ selectedCode: code });
 	},
+	addMention: (mention: CellMention) => {
+		set((state) =>
+			state.mentions.some((m) => m.id === mention.id)
+				? state
+				: { mentions: [...state.mentions, mention] },
+		);
+	},
+	removeMention: (id: string) => {
+		set((state) => ({
+			mentions: state.mentions.filter((m) => m.id !== id),
+		}));
+	},
+	clearMentions: () => set({ mentions: [] }),
 	handleQuery: async (userQuery: string) => {
-		const { setValue } = get();
+		const { setValue, clearMentions } = get();
 		const trimmedUserQuery = userQuery.trim();
 		if (trimmedUserQuery.length === 0) return;
 		setValue("");
 		const { magicQuery } = useNotebookStore.getState();
+		// magicQuery reads the mentions while building context; clear them after.
 		await magicQuery(trimmedUserQuery);
+		clearMentions();
 	},
 	setTextareaRef: (textareaRef: RefObject<HTMLTextAreaElement>) => {
 		set({ textareaRef });
@@ -58,39 +69,5 @@ export const useMagicInputStore = create<MagicInputStore>((set, get) => ({
 		if (textareaRef && textareaRef.current) {
 			textareaRef.current.focus();
 		}
-	},
-	setSelectedOption: (option: MagicInputSelections) => {
-		set({ selectedOption: option });
-	},
-	setAvailableSelections: (options: MagicInputSelections[]) => {
-		set({ availableSelections: options });
-	},
-	updateStore: (notebookMode: string, cellState: CellState) => {
-		// Determine the new available selections
-		let newSelections;
-		if (cellState.status == CellStatus.FollowUp) {
-			newSelections = [
-				MagicInputSelections.FollowUp,
-				MagicInputSelections.Chat,
-			];
-			get().setSelectedOption(MagicInputSelections.FollowUp);
-		} else if (notebookMode === "command") {
-			newSelections = [
-				MagicInputSelections.Edit,
-				MagicInputSelections.Generate,
-				MagicInputSelections.Chat,
-			];
-		} else {
-			newSelections = get().availableSelections;
-		}
-		get().setAvailableSelections(newSelections);
-
-		// Check if the current selected option is part of the new selections
-		if (!newSelections.includes(get().selectedOption)) {
-			// Reset selected option if it's not in the new available selections
-			get().setSelectedOption(newSelections[0]); // Reset to the first available option, or use a default value
-		}
-
-		return newSelections;
 	},
 }));

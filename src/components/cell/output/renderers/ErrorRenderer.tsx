@@ -19,12 +19,7 @@ import {
 } from "../../../../utils/utils";
 import { useNotebookStore } from "../../../notebook/store/NotebookStore";
 import { trackEventData } from "../../../../utils/posthog";
-import { useChatStore } from "../../../sidebar/chat/store/ChatStore";
 import useCellStore, { CellStatus } from "../../store/CellStore";
-import {
-	MagicInputSelections,
-	useMagicInputStore,
-} from "../../../input/MagicInputStore";
 
 const FixButton = ({ onClick }: { onClick: () => void }) => {
 	return (
@@ -64,7 +59,6 @@ const ErrorRenderer = ({
 	evalue: string;
 	index: number;
 }) => {
-	const askChatAssistant = useChatStore.getState().askChatAssistant;
 	const magicQuery = useNotebookStore.getState().magicQuery;
 	const errorOutputRef = useRef<HTMLDivElement>(null);
 	const tracebackRef = useRef<HTMLDivElement>(null);
@@ -144,15 +138,10 @@ error: ${ename + ": " + evalue}`;
 					<HStack px="4" my="4">
 						<FixButton
 							onClick={() => {
-								// Set the cell state to edit and perform a magic query
+								// Focus the cell, then let the agent fix the error.
 								useNotebookStore
 									.getState()
 									.setActiveCell(cellId);
-								useMagicInputStore
-									.getState()
-									.setSelectedOption(
-										MagicInputSelections.Edit,
-									);
 								magicQuery(
 									"Fix the following error:\n" +
 										getErrorPrompt(),
@@ -166,14 +155,17 @@ error: ${ename + ": " + evalue}`;
 							leftIcon={<MagnifyingGlassIcon />}
 							variant={"solid"}
 							colorScheme="pink"
-							onClick={() =>
-								askChatAssistant(
-									"Can you explain the following error?\n" +
+							onClick={() => {
+								useNotebookStore
+									.getState()
+									.setActiveCell(cellId);
+								magicQuery(
+									"Explain the following error in a markdown cell:\n" +
 										getErrorPrompt(),
-								)
-							}
+								);
+							}}
 						>
-							Show error explanation
+							Explain error
 						</Button>
 					</HStack>
 				</Box>

@@ -14,8 +14,8 @@
 		"test": "jest"
 	},
 	"dependencies": {
-		"@ai-sdk/anthropic": "^0.0.27",
-		"@ai-sdk/openai": "^0.0.33",
+		"@ai-sdk/anthropic": "^3.0.81",
+		"@ai-sdk/openai": "^3.0.67",
 		"@blueprintjs/core": "^5.10.2",
 		"@blueprintjs/table": "^5.1.4",
 		"@chakra-ui/icon": "^2.0.0",
@@ -43,7 +43,7 @@
 		"@tanstack/react-table": "^8.10.7",
 		"@uiw/codemirror-extensions-hyper-link": "^4.21.21",
 		"@uiw/react-codemirror": "^4.21.20",
-		"ai": "^3.2.5",
+		"ai": "^6.0.193",
 		"ansi-to-html": "^0.7.2",
 		"best-effort-json-parser": "^1.0.1",
 		"codemirror": "^6.0.0",
@@ -114,7 +114,9 @@
 		"postcss": "^8.5.10",
 		"serialize-javascript": "^7.0.3",
 		"glob": "^10.5.0",
-		"rollup": "^4.24.0"
+		"rollup": "^4.24.0",
+		"@ai-sdk/provider": "3.0.10",
+		"@ai-sdk/provider-utils": "4.0.27"
 	},
 	"jest": {
 		"preset": "ts-jest",

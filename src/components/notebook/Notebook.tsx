@@ -36,7 +36,7 @@ import { useScrollToBottom } from "../../hooks/useScroll";
 import { getCellTypesWithHandlers } from "../../utils/cellOptions";
 import { CELL_GUTTER_WIDTH } from "../../utils/constants/constants";
 import { initializePosthog, trackEventData } from "../../utils/posthog";
-import { isInViewport } from "../../utils/utils";
+import { isPartiallyInViewport } from "../../utils/utils";
 import CellPadding from "../cell/CellPadding";
 import MarkdownCellContainer from "../cell/MarkdownCell";
 import { enableCommandMode } from "../cell/actions/actions";
@@ -161,7 +161,7 @@ export const MainPanel = () => {
 		const activeCell = document.querySelector(".active-cell");
 		if (activeCell && mainPanelRef.current) {
 			const cellEditor = activeCell.querySelector(".cell-editor");
-			if (!isInViewport(cellEditor)) {
+			if (!isPartiallyInViewport(cellEditor)) {
 				const offset = 100;
 				const elementTop = activeCell.getBoundingClientRect().top;
 				const containerScrollTop = mainPanelRef.current.scrollTop;

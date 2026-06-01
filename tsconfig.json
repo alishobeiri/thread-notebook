@@ -41,6 +41,7 @@
   ],
   "exclude": [
     "node_modules",
-    "supabase"
+    "supabase",
+    "proxy"
   ]
 }

@@ -5,7 +5,6 @@ import ShortcutsCheatSheetModal from "./modals/cheat-sheet/ShortcutsCheatSheetMo
 import FileViewModal from "./modals/file-view/FileViewModal";
 import KernelSelectionModal from "./modals/kernel-selection/KernelSelectionModal";
 import ModelSettingsModal from "./modals/model-settings/ModelSettingsModal";
-import QueryLimitModal from "./modals/query-limit/QueryLimitModal";
 import { initializeServerConnection } from "./notebook/Notebook";
 import { useNotebookStore } from "./notebook/store/NotebookStore";
 import Sidebar from "./sidebar";
@@ -44,7 +43,6 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
 				<Sidebar />
 				<KernelSelectionModal />
 				<FileViewModal />
-				<QueryLimitModal />
 				<InvalidConnectionModal />
 				<ModelSettingsModal />
 				{children}

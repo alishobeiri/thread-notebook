@@ -21,7 +21,7 @@ export const getModelForRequest = (modelInformation?: ModelInformation) => {
 		return anthropicModel || "";
 	}
 
-	return "gpt-4o";
+	return "gpt-5.5";
 };
 
 export const getAPIKeyForRequest = (modelInformation?: ModelInformation) => {

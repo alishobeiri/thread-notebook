@@ -64,6 +64,18 @@ export function isInViewport(element: any) {
 	);
 }
 
+// True if any part of the element is vertically within the viewport. Used to
+// decide whether the active cell needs scrolling: a partially-visible cell (the
+// usual case when clicking a cell you scrolled half past) should be left alone
+// to avoid a jarring jump; only fully off-screen cells get scrolled into view.
+export function isPartiallyInViewport(element: any) {
+	if (!element) return false;
+	const rect = element.getBoundingClientRect();
+	const viewportHeight =
+		window.innerHeight || document.documentElement.clientHeight;
+	return rect.bottom > 0 && rect.top < viewportHeight;
+}
+
 export function sleep(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }

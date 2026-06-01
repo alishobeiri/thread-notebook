@@ -1,11 +1,4 @@
-export * from "./actions/action";
-export * from "./actions/chat";
-export * from "./actions/code";
-export * from "./actions/editCell";
-export * from "./actions/fixError";
-
-export * from "./utils/langfuse";
-export * from "./utils/message";
+// The client now runs its own agent harness (see src/utils/magic/agent), so the
+// old server-side action helpers were removed. Only the model-selection helpers
+// remain shared.
 export * from "./utils/model";
-export * from "./utils/promptUtils";
-export * from "./utils/types/messages";

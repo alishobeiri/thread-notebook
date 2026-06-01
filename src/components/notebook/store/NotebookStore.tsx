@@ -5,7 +5,6 @@ import { NextRouter } from "next/router";
 import { v4 as uuidv4 } from "uuid";
 import { temporal } from "zundo";
 import { create } from "zustand";
-import useApiCallStore from "../../../hooks/useApiCallStore";
 import ConnectionManager, {
 	useConnectionManagerStore,
 } from "../../../services/connection/connectionManager";
@@ -108,6 +107,14 @@ export interface INotebookStore {
 	cells: ThreadNotebookCell[];
 	metadata: NotebookMetadata;
 
+	// Snapshot of { cells, activeCellIndex } captured just before an agent run,
+	// so the whole turn can be reverted in one click. Null when there's nothing
+	// to revert to.
+	agentCheckpoint: { cells: ThreadNotebookCell[]; activeCellIndex: number } | null;
+	captureAgentCheckpoint: () => void;
+	revertToAgentCheckpoint: () => void;
+	clearAgentCheckpoint: () => void;
+
 	// Cell related functions
 	setCells: (newCells: ICell[]) => void;
 	addCell: (source?: string, type?: ICellTypes) => ICell;
@@ -135,6 +142,10 @@ export interface INotebookStore {
 	setCellOutputs: (cellId: string, newOutputs: IOutput[]) => void;
 	addCellOutput: (cellId: string, newOutput: IOutput) => void;
 	moveCell: (direction: "up" | "down") => void;
+	// Move a cell to an absolute target index, where `targetIndex` is the
+	// desired final position in the notebook AFTER the cell has been removed
+	// from its old spot (so callers don't have to compensate for the shift).
+	moveCellToIndex: (cellId: string, targetIndex: number) => void;
 	resetState: () => void;
 	clearNotebook: () => void;
 	clearCellOutputs: (cellId: string) => void;
@@ -207,13 +218,20 @@ export interface INotebookStore {
 	getDownstreamCells: (cellId: string) => string[];
 	// Transitive dependents of a cell, in dependency (topological) order, for
 	// reactive re-execution. Excludes the cell itself.
-	getReactiveExecutionOrder: (cellId: string) => string[];
+	getReactiveExecutionOrder: (cellId: string | string[]) => string[];
 	// Owner cells defining a name this cell reads (most-recently-run wins).
 	getUpstreamCells: (cellId: string) => string[];
 	isCellStale: (cellId: string) => boolean;
 	isCellDirty: (cellId: string) => boolean;
 	clearCellStale: (cellId: string) => void;
 }
+
+// Debounce the reactive cascade. When cells are run back-to-back, we collect
+// the roots and run their combined dependent cascade once after the burst
+// settles — instead of firing an overlapping cascade per cell run.
+const REACTIVE_DEBOUNCE_MS = 300;
+let pendingReactiveRoots = new Set<string>();
+let reactiveFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useNotebookStore = create<INotebookStore>()(
 	temporal(
@@ -550,13 +568,8 @@ export const useNotebookStore = create<INotebookStore>()(
 
 					trackEventData("[MagicQuery] submitted");
 
-					const shouldContinue = useApiCallStore
-						.getState()
-						.checkAndIncrementApiCallCount();
-
-					if (!shouldContinue) {
-						return;
-					}
+					// Snapshot the notebook so the user can revert the whole turn.
+					get().captureAgentCheckpoint();
 
 					try {
 						await magicQuery(prompt);
@@ -1023,6 +1036,21 @@ export const useNotebookStore = create<INotebookStore>()(
 						}
 					}
 				},
+				moveCellToIndex: (cellId: string, targetIndex: number) => {
+					const { cells } = get();
+					const from = cells.findIndex((c) => c.id === cellId);
+					if (from === -1) return;
+					const next = [...cells];
+					const [moved] = next.splice(from, 1);
+					// targetIndex is in the post-removal coordinate space; clamp so
+					// the cell count (e.g. "move to last") lands at the very end.
+					const target = Math.max(
+						0,
+						Math.min(targetIndex, next.length),
+					);
+					next.splice(target, 0, moved);
+					set({ cells: next, activeCellIndex: target });
+				},
 				addCellAtIndex: (
 					index: number,
 					source?: string,
@@ -1091,6 +1119,30 @@ export const useNotebookStore = create<INotebookStore>()(
 					}
 					set({ cells: newCells });
 				},
+				agentCheckpoint: null,
+				captureAgentCheckpoint: () => {
+					const { cells, activeCellIndex } = get();
+					set({
+						agentCheckpoint: {
+							// Shallow-copy the array; cells are replaced (not mutated)
+							// by edits, so the references stay valid for restore.
+							cells: [...cells],
+							activeCellIndex,
+						},
+					});
+				},
+				revertToAgentCheckpoint: () => {
+					const checkpoint = get().agentCheckpoint;
+					if (!checkpoint) return;
+					get().abortMagicQuery();
+					set({
+						cells: [...checkpoint.cells],
+						activeCellIndex: checkpoint.activeCellIndex,
+						agentCheckpoint: null,
+					});
+					trackEventData("[Agent] Reverted run");
+				},
+				clearAgentCheckpoint: () => set({ agentCheckpoint: null }),
 				setNotebookMode: (newType: NotebookMode) => {
 					set({ notebookMode: newType });
 				},
@@ -1178,23 +1230,35 @@ export const useNotebookStore = create<INotebookStore>()(
 								// Refresh the files after each execution
 								refreshFiles(path, true);
 
-								// Reactive cascade: after this cell runs, re-run
-								// its transitive dependents in dependency order.
-								// Run as one batch (not via executeCell) so cells
-								// don't each kick off their own cascade.
+								// Reactive cascade: after this cell runs, re-run its
+								// transitive dependents. Debounced so back-to-back
+								// runs collect their roots and fire ONE combined
+								// cascade once the burst settles — and cells run
+								// during the burst (the roots) aren't re-run by it.
 								if (!reactive) {
 									return;
 								}
-								const order =
-									get().getReactiveExecutionOrder(cellId);
-								if (order.length === 0) {
-									return;
+								pendingReactiveRoots.add(cellId);
+								if (reactiveFlushTimer) {
+									clearTimeout(reactiveFlushTimer);
 								}
-								connectionManager.kernel
-									?.execute(order)
-									.then(() => {
-										refreshFiles(path, true);
-									});
+								reactiveFlushTimer = setTimeout(() => {
+									const roots = Array.from(pendingReactiveRoots);
+									pendingReactiveRoots = new Set();
+									reactiveFlushTimer = null;
+									const order =
+										get().getReactiveExecutionOrder(roots);
+									if (order.length === 0) {
+										return;
+									}
+									// Run as one batch (not via executeCell) so
+									// cascade cells don't each re-trigger a cascade.
+									ConnectionManager.getInstance()
+										.kernel?.execute(order)
+										.then(() => {
+											get().refreshFiles(get().path, true);
+										});
+								}, REACTIVE_DEBOUNCE_MS);
 							});
 					} else if (cell_type === "markdown") {
 						const { setMarkdownCellRendered } = get();
@@ -1317,15 +1381,20 @@ export const useNotebookStore = create<INotebookStore>()(
 						});
 				},
 
-				getReactiveExecutionOrder: (cellId: string) => {
+				getReactiveExecutionOrder: (cellId: string | string[]) => {
 					const { cells, getDownstreamCells } = get();
 
 					// 1. Transitive downstream closure of the changed cell.
 					const reachable = new Set<string>();
-					const stack = [...getDownstreamCells(cellId)];
+					const roots = Array.isArray(cellId) ? cellId : [cellId];
+					const rootsSet = new Set(roots);
+					const stack: string[] = [];
+					for (const root of roots) {
+						stack.push(...getDownstreamCells(root));
+					}
 					while (stack.length > 0) {
 						const node = stack.pop() as string;
-						if (node === cellId || reachable.has(node)) {
+						if (rootsSet.has(node) || reachable.has(node)) {
 							continue;
 						}
 						reachable.add(node);

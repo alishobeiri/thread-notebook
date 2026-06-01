@@ -5,9 +5,14 @@ import os
 this_directory = os.path.abspath(os.path.dirname(__file__))
 parent_directory = os.path.abspath(os.path.join(this_directory, os.pardir))
 
-# Read the content of README.md from the parent directory
-with open(os.path.join(parent_directory, "README.md"), "r") as fh:
-    long_description = fh.read()
+# Read the content of README.md from the parent directory when building from
+# the source tree. It lives outside the package, so it's absent when building
+# from an sdist — tolerate that instead of crashing the build/install.
+readme_path = os.path.join(parent_directory, "README.md")
+long_description = ""
+if os.path.exists(readme_path):
+    with open(readme_path, "r") as fh:
+        long_description = fh.read()
 
 # Replace all mentions of 'public/' with 'thread-notebook/static/'
 long_description = long_description.replace(
@@ -15,7 +20,7 @@ long_description = long_description.replace(
 
 setup(
     name="thread-notebook",
-    version="0.1.36",
+    version="0.2.0",
     packages=find_packages(),
     include_package_data=True,
     package_data={"thread_notebook": ["static/**/*"]},
