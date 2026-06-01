@@ -117,6 +117,7 @@ export const useNotebookHotkeys = () => {
 	useHotkeys(
 		"shift+enter",
 		(event: KeyboardEvent, hotkeysEvent: HotkeysEvent) => {
+			event.preventDefault();
 			runCellAndAdvance();
 		},
 	);
@@ -134,6 +135,7 @@ export const useNotebookHotkeys = () => {
 	useHotkeys(
 		"mod+enter",
 		(event: KeyboardEvent, hotkeysEvent: HotkeysEvent) => {
+			event.preventDefault();
 			runCellLogic();
 		},
 	);
@@ -141,6 +143,9 @@ export const useNotebookHotkeys = () => {
 	useHotkeys(
 		"ctrl+enter",
 		(event: KeyboardEvent, hotkeysEvent: HotkeysEvent) => {
+			// Stop the browser from also acting on the keystroke (e.g. a stray
+			// context-menu/navigation side effect on Ctrl+Enter).
+			event.preventDefault();
 			runCellLogic();
 		},
 	);

@@ -53,8 +53,18 @@ export const jupyterLabKeymap = [
 				"Mod-shift-k",
 			].includes(key),
 	),
-	{ key: "Shift-Enter", run: runCellAndAdvance },
-	{ key: "Ctrl-Enter", run: runCell },
+	{
+		key: "Shift-Enter",
+		run: runCellAndAdvance,
+		stopPropagation: true,
+		preventDefault: true,
+	},
+	{
+		key: "Ctrl-Enter",
+		run: runCell,
+		stopPropagation: true,
+		preventDefault: true,
+	},
 	{
 		key: "Mod-Enter",
 		run: runCell,
