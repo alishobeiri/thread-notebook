@@ -110,8 +110,23 @@ export class KernelModel {
 		}
 
 		for (const cellId of cellIds) {
-			const { cells, getCellIndexById, setCurrentlyExecutingCell } =
-				useNotebookStore.getState();
+			const {
+				cells,
+				getCellIndexById,
+				setCurrentlyExecutingCell,
+				executingCells,
+			} = useNotebookStore.getState();
+
+			// Skip cells already queued or running. When several cells are run
+			// back to back, each one's reactive cascade re-requests its
+			// downstream cells — which are often already queued by a direct run
+			// or an earlier cascade. Deduping the queue here (the single point
+			// every execution path flows through) drops those redundant
+			// re-runs so each cell executes at most once per in-flight batch.
+			if (executingCells.has(cellId)) {
+				continue;
+			}
+
 			const index = getCellIndexById(cellId);
 			const cell = cells[index];
 			if (!cell || !cell.source) continue;
